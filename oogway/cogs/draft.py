@@ -171,27 +171,33 @@ class ResultView(discord.ui.View):
     def __init__(self, cog: "DraftCog", series: SeriesState):
         super().__init__(timeout=None)
         self.cog, self.series = cog, series
+        self._processing = False
 
     async def _guard(self, inter: Interaction) -> bool:
         if inter.user.id not in (self.series.captain_a, self.series.captain_b):
             await inter.response.send_message("⛔ Capitaines only.", ephemeral=True)
             return False
+        if self._processing:
+            await inter.response.send_message("⏳ Vote déjà en cours...", ephemeral=True)
+            return False
         return True
 
-    @discord.ui.button(label="✅ Win (capitaine A)", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="✅ Team A gagne", emoji="🔵", style=discord.ButtonStyle.success)
     async def win_a(self, inter: Interaction, _):
         if not await self._guard(inter): return
         await inter.response.defer()
+        self._processing = True
         await self.cog._report(inter, "A")
         try:
             await inter.message.delete()
         except Exception:
             pass
 
-    @discord.ui.button(label="✅ Win (capitaine B)", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="✅ Team B gagne", emoji="🔴", style=discord.ButtonStyle.danger)
     async def win_b(self, inter: Interaction, _):
         if not await self._guard(inter): return
         await inter.response.defer()
+        self._processing = True
         await self.cog._report(inter, "B")
         try:
             await inter.message.delete()
@@ -201,9 +207,11 @@ class ResultView(discord.ui.View):
 
 class SideChoiceView(discord.ui.View):
     """Choix des sides par le **capitaine perdant uniquement** avant la prochaine draft."""
-    def __init__(self, loser_id: int):
+    def __init__(self, loser_id: int, captain_a_id: int, captain_b_id: int):
         super().__init__(timeout=60)
         self.loser_id = loser_id
+        self.captain_a_id = captain_a_id
+        self.captain_b_id = captain_b_id
         self.swap_chosen: Optional[bool] = None
         self._done = asyncio.Event()
 
@@ -218,7 +226,12 @@ class SideChoiceView(discord.ui.View):
         if not await self._guard(inter): return
         self.swap_chosen = True
         for i in self.children: i.disabled = True
-        await inter.response.edit_message(content="🔄 Sides **inversés** pour la prochaine game.", view=self)
+        msg = (
+            f"🔄 **Sides inversés !**\n\n"
+            f"🔵 <@{self.captain_b_id}> → **Team A** (Blue side)\n"
+            f"🔴 <@{self.captain_a_id}> → **Team B** (Red side)"
+        )
+        await inter.response.edit_message(content=msg, view=self)
         self._done.set()
 
     @discord.ui.button(label="➡️ Garder les sides", style=discord.ButtonStyle.secondary)
@@ -226,7 +239,12 @@ class SideChoiceView(discord.ui.View):
         if not await self._guard(inter): return
         self.swap_chosen = False
         for i in self.children: i.disabled = True
-        await inter.response.edit_message(content="➡️ Sides **inchangés**.", view=self)
+        msg = (
+            f"✅ **Sides inchangés !**\n\n"
+            f"🔵 <@{self.captain_a_id}> → **Team A** (Blue side)\n"
+            f"🔴 <@{self.captain_b_id}> → **Team B** (Red side)"
+        )
+        await inter.response.edit_message(content=msg, view=self)
         self._done.set()
 
     async def on_timeout(self):
@@ -278,12 +296,18 @@ class CaptainsReadyView(discord.ui.View):
 
 class ContinueView(discord.ui.View):
     """Propose de prolonger une série (Bo1→Bo3 ou Bo3→Bo5)."""
-    def __init__(self, captains: tuple[int, int], next_bo: int):
+    def __init__(self, captains: tuple[int, int], next_bo: int, is_tied: bool = False, current_score: str = ""):
         super().__init__(timeout=60)
         self.captains = captains
         self.next_bo = next_bo
+        self.is_tied = is_tied
+        self.current_score = current_score
         self.go_next: Optional[bool] = None
         self._done = asyncio.Event()
+
+        if is_tied:
+            self.children[0].label = f"✅ Jouer la belle (Bo{next_bo})"
+            self.children[1].label = f"🤝 Terminer à {current_score}"
 
     @discord.ui.button(label="✅ Continuer", style=discord.ButtonStyle.success)
     async def go(self, inter: Interaction, _):
@@ -291,7 +315,11 @@ class ContinueView(discord.ui.View):
             return await inter.response.send_message("⛔ Capitaines only.", ephemeral=True)
         self.go_next = True
         for i in self.children: i.disabled = True
-        await inter.response.edit_message(content=f"✅ Passage en **Bo{self.next_bo}** confirmé !", view=self)
+        if self.is_tied:
+            msg = f"✅ **Belle confirmée !** Passage en **Bo{self.next_bo}** pour départager."
+        else:
+            msg = f"✅ Passage en **Bo{self.next_bo}** confirmé !"
+        await inter.response.edit_message(content=msg, view=self)
         self._done.set()
 
     @discord.ui.button(label="❌ Terminer", style=discord.ButtonStyle.danger)
@@ -300,7 +328,11 @@ class ContinueView(discord.ui.View):
             return await inter.response.send_message("⛔ Capitaines only.", ephemeral=True)
         self.go_next = False
         for i in self.children: i.disabled = True
-        await inter.response.edit_message(content="❌ Série clôturée.", view=self)
+        if self.is_tied:
+            msg = f"🤝 Série clôturée sur un **match nul {self.current_score}**."
+        else:
+            msg = "❌ Série clôturée."
+        await inter.response.edit_message(content=msg, view=self)
         self._done.set()
 
     async def on_timeout(self):
@@ -426,32 +458,35 @@ class DraftCog(commands.Cog):
     def _build_embed(series: SeriesState, secs: int, ptr: int, *, highlight=False) -> discord.Embed:
         g = series.current_game
         bar = time_bar(secs)
-        guild = getattr(series, "guild", None)  # si tu stockes le guild; sinon passe-le en param
+        guild = getattr(series, "guild", None)
 
         capA_id, capB_id = series.captain_a, series.captain_b
         capA_mention, capB_mention = f"<@{capA_id}>", f"<@{capB_id}>"
 
-        # (optionnel) noms lisibles pour les noms de champs
         capA_name = getattr(getattr(guild, "get_member", lambda _: _)(capA_id), "display_name", f"Cap A")
         capB_name = getattr(getattr(guild, "get_member", lambda _: _)(capB_id), "display_name", f"Cap B")
 
         if ptr < len(DRAFT_ORDER):
             side, phase = DRAFT_ORDER[ptr], ("BAN" if ptr in BAN_INDEXES else "PICK")
             who = capA_mention if side == "A" else capB_mention
-            header = f"{bar} **{secs:>2}s**  ·  Tour **{who} · {phase}**" if highlight else f"{bar} {secs:>2}s · {who} · {phase}"
+            header = f"```\n{bar} {secs:>2}s\n```\n**Tour {who} · {phase}**" if highlight else f"```\n{bar} {secs:>2}s\n```{who} · {phase}"
             colour = DraftCog._turn_color(side)
         else:
-            header, colour = "Draft terminée", DraftCog._turn_color(None)
+            header, colour = "```\nDraft terminée\n```", DraftCog._turn_color(None)
 
-        join = lambda L: ", ".join(L) if L else "—"
-        embed = discord.Embed(title=f"🛡️ Draft · Game {len(series.games)}",
-                              colour=colour, description=header)
+        join = lambda L: ", ".join(f"`{c}`" for c in L) if L else "—"
+        embed = discord.Embed(
+            title=f"⚔️ Draft Phase · Game {len(series.games)}",
+            colour=colour,
+            description=header
+        )
 
-        # 🟥 NOMS DE CHAMPS SANS MENTION ; MENTION EN 1re LIGNE DE LA VALUE
-        embed.add_field(name=f"🚫  BANS — {capA_name}", value=f"{capA_mention}\n{join(g.bans_a)}", inline=True)
-        embed.add_field(name=f"🚫  BANS — {capB_name}", value=f"{capB_mention}\n{join(g.bans_b)}", inline=True)
-        embed.add_field(name=f"✅  PICKS — {capA_name}", value=f"{capA_mention}\n{join(g.picks_a)}", inline=True)
-        embed.add_field(name=f"✅  PICKS — {capB_name}", value=f"{capB_mention}\n{join(g.picks_b)}", inline=True)
+        embed.add_field(name="━━━━━━━━━━━━━━━━━━━━━━", value="", inline=False)
+        embed.add_field(name=f"🚫 BANS — 🔵 {capA_name}", value=f"{capA_mention}\n{join(g.bans_a)}", inline=True)
+        embed.add_field(name=f"🚫 BANS — 🔴 {capB_name}", value=f"{capB_mention}\n{join(g.bans_b)}", inline=True)
+        embed.add_field(name="━━━━━━━━━━━━━━━━━━━━━━", value="", inline=False)
+        embed.add_field(name=f"✅ PICKS — 🔵 {capA_name}", value=f"{capA_mention}\n{join(g.picks_a)}", inline=True)
+        embed.add_field(name=f"✅ PICKS — 🔴 {capB_name}", value=f"{capB_mention}\n{join(g.picks_b)}", inline=True)
 
         embed.set_footer(text="Capitaines only • messages hors capitaines supprimés")
         return embed
@@ -460,31 +495,39 @@ class DraftCog(commands.Cog):
     def _build_recap_embed(series: SeriesState) -> discord.Embed:
         g = series.current_game
         capA, capB = f"<@{series.captain_a}>", f"<@{series.captain_b}>"
-        join = lambda L: ", ".join(L) if L else "—"
+        join = lambda L: ", ".join(f"`{c}`" for c in L) if L else "—"
         embed = discord.Embed(
-            title=f"📊  Récap — Game {len(series.games)}",
+            title=f"📊 Récapitulatif · Game {len(series.games)}",
             colour=discord.Colour.dark_gold(),
-            description=(f"**Score : {series.score_a}-{series.score_b}**\n"
+            description=(f"```\nScore : {series.score_a}-{series.score_b}\n```\n"
                          "Sélectionnez le vainqueur (Capitaines only)."),
         )
-        embed.add_field(name=f"🚫  BANS  {capA}", value=join(g.bans_a), inline=True)
-        embed.add_field(name=f"🚫  BANS  {capB}", value=join(g.bans_b), inline=True)
-        embed.add_field(name=f"✅  PICKS  {capA}", value=join(g.picks_a), inline=True)
-        embed.add_field(name=f"✅  PICKS  {capB}", value=join(g.picks_b), inline=True)
+        embed.add_field(name=f"🚫 BANS — 🔵 {capA}", value=join(g.bans_a), inline=True)
+        embed.add_field(name=f"🚫 BANS — 🔴 {capB}", value=join(g.bans_b), inline=True)
+        embed.add_field(name=f"✅ PICKS — 🔵 {capA}", value=join(g.picks_a), inline=True)
+        embed.add_field(name=f"✅ PICKS — 🔴 {capB}", value=join(g.picks_b), inline=True)
         return embed
 
     @staticmethod
     def _build_chi_embed(series: SeriesState) -> discord.Embed:
         g = series.current_game
         p_blue, p_red = chi_predict(g.picks_a, g.picks_b)
-        embed = discord.Embed(
-            title="⚖️  Balance du chi",
-            colour=discord.Colour.from_rgb(0, 176, 255),
-            description=f"🟦 **{p_blue:4.1f} %** vs **{p_red:4.1f} %** 🟥"
-        )
-        embed.add_field(name="", value=f"```\n{chi_bar(p_blue)}\n```", inline=False)
-        return embed
+        advantage = abs(p_blue - p_red)
+        adv_side = "🔵 Blue" if p_blue > p_red else "🔴 Red" if p_red > p_blue else "⚖️ Équilibré"
 
+        embed = discord.Embed(
+            title="⚖️ Prédiction Chi · Meta Analysis",
+            colour=discord.Colour.from_rgb(0, 176, 255),
+            description=(
+                f"```\n"
+                f"🔵 Blue: {p_blue:5.1f}%\n"
+                f"🔴 Red:  {p_red:5.1f}%\n"
+                f"```\n"
+                f"**Avantage:** {adv_side} ({advantage:.1f}%)"
+            )
+        )
+        embed.add_field(name="Balance visuelle", value=f"```\n{chi_bar(p_blue)}\n```", inline=False)
+        return embed
     # ─── anti-spam hors capitaines ────────────────────────────────
     @commands.Cog.listener()
     async def on_message(self, msg: discord.Message):
@@ -538,7 +581,7 @@ class DraftCog(commands.Cog):
                     series.bo = next_bo
                     # choix side par le capitaine perdant de la dernière game
                     loser = series.captain_b if side == "A" else series.captain_a
-                    scv = SideChoiceView(loser_id=loser)
+                    scv = SideChoiceView(loser_id=loser, captain_a_id=series.captain_a, captain_b_id=series.captain_b)
                     msg_sides = await inter.channel.send(f"🧭 <@{loser}> choisit les **sides** :", view=scv)
                     await scv._done.wait()
                     await msg_sides.delete()
@@ -561,6 +604,55 @@ class DraftCog(commands.Cog):
                             description=", ".join(series.fearless_pool),
                             colour=discord.Colour.red()))
                     return await self._draft_loop(inter.channel, series, status)
+
+            # Bo3 à 1-1 : proposer belle ou terminer sur match nul
+            if series.bo == 3 and series.score_a == 1 and series.score_b == 1:
+                next_bo = 3
+                cont_view = ContinueView((series.captain_a, series.captain_b), next_bo=next_bo, is_tied=True, current_score="1-1")
+                msg = await inter.channel.send(
+                    f"⚖️ **Match nul 1-1** !\n"
+                    f"Voulez-vous jouer une **belle** pour départager ?",
+                    view=cont_view,
+                )
+                await cont_view._done.wait()
+                await msg.delete()
+
+                if not cont_view.go_next:
+                    # Terminer sur match nul
+                    embed_tie = discord.Embed(
+                        title=f"🤝 Match nul 1-1",
+                        colour=discord.Colour.gold(),
+                        description="Les deux équipes se quittent sur une égalité parfaite !",
+                    ).set_footer(text="GG à tous !")
+                    await inter.channel.send(embed=embed_tie)
+                    self.series_by_thread.pop(inter.channel.id, None)
+                    return
+
+                # Continuer avec la belle
+                loser = series.captain_b if side == "A" else series.captain_a
+                scv = SideChoiceView(loser_id=loser, captain_a_id=series.captain_a, captain_b_id=series.captain_b)
+                msg_sides = await inter.channel.send(f"🧭 <@{loser}> choisit les **sides** :", view=scv)
+                await scv._done.wait()
+                await msg_sides.delete()
+                if scv.swap_chosen:
+                    series.team_a, series.team_b = series.team_b, series.team_a
+                    series.captain_a, series.captain_b = series.captain_b, series.captain_a
+                    series.score_a, series.score_b = series.score_b, series.score_a
+
+                rv = CaptainsReadyView(series.captain_a, series.captain_b)
+                msg_ready = await inter.channel.send("⏳ Ready check des capitaines…", view=rv)
+                await rv._done.wait()
+                await msg_ready.delete()
+
+                series.start_new_game()
+                status = await inter.channel.send(embed=self._build_embed(series, 60, 0, highlight=True))
+                series.status_msg_id = status.id
+                if series.fearless_pool:
+                    await inter.channel.send(embed=discord.Embed(
+                        title="🔥 Fearless — champions désormais bannis",
+                        description=", ".join(series.fearless_pool),
+                        colour=discord.Colour.red()))
+                return await self._draft_loop(inter.channel, series, status)
 
             # Bo3 terminé → proposer Bo5
             if series.bo == 3:
@@ -577,7 +669,7 @@ class DraftCog(commands.Cog):
                 if cont_view.go_next:
                     series.bo = next_bo
                     loser = series.captain_b if side == "A" else series.captain_a
-                    scv = SideChoiceView(loser_id=loser)
+                    scv = SideChoiceView(loser_id=loser, captain_a_id=series.captain_a, captain_b_id=series.captain_b)
                     msg_sides = await inter.channel.send(f"🧭 <@{loser}> choisit les **sides** :", view=scv)
                     await scv._done.wait()
                     await msg_sides.delete()
@@ -601,6 +693,55 @@ class DraftCog(commands.Cog):
                             colour=discord.Colour.red()))
                     return await self._draft_loop(inter.channel, series, status)
 
+            # Bo5 à 2-2 : proposer belle ou terminer sur match nul
+            if series.bo == 5 and series.score_a == 2 and series.score_b == 2:
+                next_bo = 5
+                cont_view = ContinueView((series.captain_a, series.captain_b), next_bo=next_bo, is_tied=True, current_score="2-2")
+                msg = await inter.channel.send(
+                    f"⚖️ **Match nul 2-2** !\n"
+                    f"Voulez-vous jouer une **belle** pour départager ?",
+                    view=cont_view,
+                )
+                await cont_view._done.wait()
+                await msg.delete()
+
+                if not cont_view.go_next:
+                    # Terminer sur match nul
+                    embed_tie = discord.Embed(
+                        title=f"🤝 Match nul 2-2",
+                        colour=discord.Colour.gold(),
+                        description="Les deux équipes se quittent sur une égalité parfaite !",
+                    ).set_footer(text="GG à tous !")
+                    await inter.channel.send(embed=embed_tie)
+                    self.series_by_thread.pop(inter.channel.id, None)
+                    return
+
+                # Continuer avec la belle
+                loser = series.captain_b if side == "A" else series.captain_a
+                scv = SideChoiceView(loser_id=loser, captain_a_id=series.captain_a, captain_b_id=series.captain_b)
+                msg_sides = await inter.channel.send(f"🧭 <@{loser}> choisit les **sides** :", view=scv)
+                await scv._done.wait()
+                await msg_sides.delete()
+                if scv.swap_chosen:
+                    series.team_a, series.team_b = series.team_b, series.team_a
+                    series.captain_a, series.captain_b = series.captain_b, series.captain_a
+                    series.score_a, series.score_b = series.score_b, series.score_a
+
+                rv = CaptainsReadyView(series.captain_a, series.captain_b)
+                msg_ready = await inter.channel.send("⏳ Ready check des capitaines…", view=rv)
+                await rv._done.wait()
+                await msg_ready.delete()
+
+                series.start_new_game()
+                status = await inter.channel.send(embed=self._build_embed(series, 60, 0, highlight=True))
+                series.status_msg_id = status.id
+                if series.fearless_pool:
+                    await inter.channel.send(embed=discord.Embed(
+                        title="🔥 Fearless — champions désormais bannis",
+                        description=", ".join(series.fearless_pool),
+                        colour=discord.Colour.red()))
+                return await self._draft_loop(inter.channel, series, status)
+
             # victoire finale : embed doré
             winners = series.team_a if side == "A" else series.team_b
             mentions = "\n".join(f"<@{uid}>" for uid in winners)
@@ -615,7 +756,7 @@ class DraftCog(commands.Cog):
 
         # ─── série continue : choix des sides par le capitaine perdant ───
         loser = series.captain_b if side == "A" else series.captain_a
-        scv = SideChoiceView(loser_id=loser)
+        scv = SideChoiceView(loser_id=loser, captain_a_id=series.captain_a, captain_b_id=series.captain_b)
         msg_sides = await inter.channel.send(f"🧭 <@{loser}> choisit les **sides** :", view=scv)
         await scv._done.wait()
         await msg_sides.delete()
