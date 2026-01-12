@@ -107,11 +107,16 @@ class RiotClient:
                     if resp.status == 429:
                         retry_after = int(resp.headers.get("Retry-After", "1")) + 1
                         if attempt < max_retries - 1:
-                            log.warning(f"429 Rate limited, retrying after {retry_after}s (attempt {attempt + 1}/{max_retries})")
+                            log.warning(
+                                f"429 Rate limited, retrying after {retry_after}s "
+                                f"(attempt {attempt + 1}/{max_retries})"
+                            )
                             await asyncio.sleep(retry_after)
                             continue
                         else:
-                            raise RateLimitError(f"Rate limit exceeded after {max_retries} attempts")
+                            raise RateLimitError(
+                                f"Rate limit exceeded after {max_retries} attempts"
+                            )
 
                     if resp.status == 404:
                         log.debug(f"404 Not Found: {url}")
