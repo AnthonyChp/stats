@@ -129,6 +129,32 @@ class LeaderboardCog(commands.Cog):
         self.view: Optional[LeaderboardView] = None
         self._rank_cache: dict[Tuple[str,int], Tuple[float, Tuple[str,str,int,int,int,int]]] = {}
 
+    @staticmethod
+    def get_wr_label(wr: int) -> str:
+        """Retourne un label humoristique basé sur le winrate."""
+        if wr < 40:
+            return "**IA ChatGPT**"
+        elif wr <= 42:
+            return "**Boosted**"
+        elif wr <= 45:
+            return "**Dans le sac à dos**"
+        elif wr <= 48:
+            return "**Uber LP**"
+        elif wr <= 51:
+            return "**All inclusive**"
+        elif wr <= 54:
+            return "**Semi-boosté**"
+        elif wr <= 57:
+            return "**Propre**"
+        elif wr <= 60:
+            return "**Peut jouer seul**"
+        elif wr <= 63:
+            return "**1v9**"
+        elif wr <= 65:
+            return "**Illégal en soloQ**"
+        else:
+            return "**Oogway** 🐢"
+
     @commands.Cog.listener()
     async def on_ready(self):
         log.info("LeaderboardCog ready, retrieving or sending message")
@@ -210,8 +236,9 @@ class LeaderboardCog(commands.Cog):
                 name = u.puuid[:6]
                 avatar = None
             field_name = f"{medal}#{idx} • {name}"
-            #        ex: **Platinum II** — 75 LP (54% WR • 120V/102D)
-            field_value = f"**{tier} {div}** — {lp} LP ({wr}% WR • {wins}V/{losses}D)"
+            #        ex: **Platinum II** — 75 LP (54% WR • 120V/102D • **Propre**)
+            wr_label = self.get_wr_label(wr)
+            field_value = f"**{tier} {div}** — {lp} LP ({wr}% WR • {wins}V/{losses}D • {wr_label})"
             embed.add_field(name=field_name, value=field_value, inline=False)
             if idx == page * per_page + 1 and avatar:
                 embed.set_author(name="Leaderboard", icon_url=avatar)
