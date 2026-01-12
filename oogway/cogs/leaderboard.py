@@ -139,19 +139,19 @@ class LeaderboardCog(commands.Cog):
         elif wr <= 45:
             return "**Dans le sac à dos**"
         elif wr <= 48:
-            return "**Uber LP**"
+            return "**Presque en positif**"
         elif wr <= 51:
             return "**All inclusive**"
         elif wr <= 54:
-            return "**Semi-boosté**"
+            return "**Mouais**"
         elif wr <= 57:
             return "**Propre**"
         elif wr <= 60:
-            return "**Peut jouer seul**"
+            return "**Shifu**"
         elif wr <= 63:
             return "**1v9**"
         elif wr <= 65:
-            return "**Illégal en soloQ**"
+            return "**Po**"
         else:
             return "**Oogway** 🐢"
 
