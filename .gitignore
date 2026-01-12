@@ -1,3 +1,62 @@
-
+# Environment files
 .env
+.env.local
+
+# Virtual environments
 .venv
+venv/
+ENV/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Testing
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+data/oogway.db
+
+# Logs
+*.log
+logs/
+meta.log
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Alembic
+alembic/__pycache__/
+alembic/versions/__pycache__/
+
+# Docker
+.dockerignore
+
+# Temporary files
+tmp/
+temp/
+*.tmp

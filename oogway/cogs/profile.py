@@ -112,10 +112,12 @@ def make_sprite_sync(item_ids: list[int]) -> discord.File | None:
         url = f"https://ddragon.leagueoflegends.com/cdn/{ver}/img/item/{iid}.png"
         try:
             data = requests.get(url, timeout=5).content
-            img  = Image.open(io.BytesIO(data)).convert("RGBA")
+            img = Image.open(io.BytesIO(data)).convert("RGBA")
             icons.append(img.resize((SPRITE_SIZE, SPRITE_SIZE)))
-        except Exception: pass
-    if not icons: return None
+        except Exception:
+            pass
+    if not icons:
+        return None
     sprite = Image.new("RGBA", (SPRITE_SIZE*len(icons), SPRITE_SIZE))
     for i, ic in enumerate(icons):
         sprite.paste(ic, (i*SPRITE_SIZE, 0), ic)

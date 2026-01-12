@@ -13,15 +13,22 @@ class Settings(BaseSettings):
     TIMEZONE: str = "Europe/Paris"
 
     # — Discord IDs —
-    APPLICATION_ID:    int  # ID de l’application Discord
+    APPLICATION_ID:    int  # ID de l'application Discord
     ALERT_CHANNEL_ID:  int  # où poster les alerts de parties
     SUMMARY_CHANNEL_ID:int  # où poster les résumés périodiques
-    LINK_CHANNEL_ID:   int  # canal où les users “link” leur compte
+    LINK_CHANNEL_ID:   int  # canal où les users "link" leur compte
     LEADERBOARD_CHANNEL_ID: int  # canal du leaderboard
     DEBUG_GUILD_ID:    Optional[int] = None  # pour les slash-commands en dev
     ORGANIZER_ROLE_ID: int  # rôle autorisé à lancer /5v5
     CUSTOM_GAME_CHANNEL_ID: int  # salon où la commande est utilisable
+    JOIN_PING_ROLE_ID: Optional[int] = None  # rôle à ping pour rejoindre les customs
+
+    # — Redis —
     REDIS_URL: str
+
+    # — Riot API Configuration —
+    DEFAULT_REGION: str = "euw1"  # Région par défaut pour les comptes
+
     #MTXSERV_CLIENT_ID: str
     #MTXSERV_CLIENT_SECRET: str
     #MTXSERV_API_KEY: str

@@ -347,22 +347,18 @@ class MatchAlertsCog(commands.Cog):
 
     @with_retry()
     async def _get_match_ids(self, user: User, n: int):
-        # RiotClient signature supposée: get_match_ids(region, puuid, count)
-        return await asyncio.get_running_loop().run_in_executor(
-            None, self.riot.get_match_ids, user.region, user.puuid, n
-        )
+        """Get match IDs for user - now fully async."""
+        return await self.riot.get_match_ids(user.region, user.puuid, n)
 
     @with_retry()
     async def _get_match(self, user: User, mid: str):
-        return await asyncio.get_running_loop().run_in_executor(
-            None, self.riot.get_match_by_id, user.region, mid
-        )
+        """Get match details - now fully async."""
+        return await self.riot.get_match_by_id(user.region, mid)
 
     @with_retry()
     async def _get_timeline(self, user: User, mid: str):
-        return await asyncio.get_running_loop().run_in_executor(
-            None, self.riot.get_match_timeline_by_id, user.region, mid
-        )
+        """Get match timeline - now fully async."""
+        return await self.riot.get_match_timeline_by_id(user.region, mid)
 
     async def handle_user(self, user: User):
         """
@@ -504,15 +500,9 @@ class MatchAlertsCog(commands.Cog):
             duo_names
         )
 
-    # ✅ FIX: méthode au niveau de la classe (pas dans process_match), indentation correcte
     async def _get_rank(self, user: User, queue_id: int) -> Tuple[str, str, int, int]:
-        loop = asyncio.get_running_loop()
-        entries = await loop.run_in_executor(
-            None,
-            self.riot.get_league_entries_by_puuid,
-            user.region,
-            user.puuid,
-        )
+        """Get player rank information for specific queue - now fully async."""
+        entries = await self.riot.get_league_entries_by_puuid(user.region, user.puuid)
 
         # Tente correspondance exacte, sinon fallback si Flex
         qtype = QUEUE_TYPE.get(queue_id)

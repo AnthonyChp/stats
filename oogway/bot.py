@@ -11,22 +11,20 @@
 from __future__ import annotations
 
 import asyncio
-import logging
+import os
 import traceback
 
 import discord
 from discord.ext import commands
 
 from oogway.config import settings
+from oogway.logging_config import setup_logging, get_logger
 
 ###############################################################################
 # Logging --------------------------------------------------------------------
 ###############################################################################
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s: %(message)s",
-)
-log = logging.getLogger("oogway.bot")
+setup_logging(level=os.getenv("LOG_LEVEL", "INFO"))
+log = get_logger("oogway.bot")
 
 ###############################################################################
 # Bot & intents --------------------------------------------------------------
@@ -58,8 +56,8 @@ async def load_all_extensions() -> None:
         try:
             await bot.load_extension(ext)
             log.info("✅ Loaded extension %s", ext)
-        except Exception:  # noqa: BLE001
-            log.error("❌ Failed to load extension %s\n%s", ext, traceback.format_exc())
+        except (ImportError, commands.ExtensionError, commands.ExtensionFailed) as e:
+            log.error("❌ Failed to load extension %s: %s\n%s", ext, e, traceback.format_exc())
             # Pour prod, on stoppe le bot si un cog plante :
             raise
 
