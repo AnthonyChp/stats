@@ -291,6 +291,67 @@ def lp_delta_between(prev: Tuple[str, str, int], cur: Tuple[str, str, int]) -> i
         else:
             return -(prev_lp + (100 - cur_lp))
 
+# ─── LP Trend Graph ──────────────────────────────────────────────────────────
+def make_lp_graph(lp_history: List[int]) -> str:
+    """Create a 3-line ASCII graph of LP progression."""
+    if len(lp_history) < 2:
+        return "─" * 10
+
+    # Normalize to 0-2 range (3 lines)
+    min_lp = min(lp_history)
+    max_lp = max(lp_history)
+    range_lp = max_lp - min_lp or 1
+
+    # Create 3 lines
+    lines = ["", "", ""]
+    for i, lp in enumerate(lp_history):
+        normalized = int((lp - min_lp) / range_lp * 2)
+
+        if normalized == 2:
+            lines[0] += "╭" if i > 0 and int((lp_history[i-1] - min_lp) / range_lp * 2) < 2 else "─"
+            lines[1] += "│" if i > 0 and int((lp_history[i-1] - min_lp) / range_lp * 2) < 2 else " "
+            lines[2] += " "
+        elif normalized == 1:
+            lines[0] += "╰" if i > 0 and int((lp_history[i-1] - min_lp) / range_lp * 2) == 2 else " "
+            lines[1] += "─"
+            lines[2] += "╭" if i > 0 and int((lp_history[i-1] - min_lp) / range_lp * 2) == 0 else " "
+        else:  # normalized == 0
+            lines[0] += " "
+            lines[1] += "│" if i > 0 and int((lp_history[i-1] - min_lp) / range_lp * 2) > 0 else " "
+            lines[2] += "─"
+
+    return "\n".join(lines)
+
+# ─── Promotion/Demotion Detection ────────────────────────────────────────────
+def detect_rank_change(prev: Tuple[str, str, int], cur: Tuple[str, str, int]) -> Optional[str]:
+    """Detect if player was promoted or demoted."""
+    prev_t, prev_d, prev_lp = prev
+    cur_t, cur_d, cur_lp = cur
+
+    if not prev_t or prev_t == "Unranked":
+        return None
+
+    # Tier change
+    prev_tier_idx = TIER_INDEX.get(prev_t, 0)
+    cur_tier_idx = TIER_INDEX.get(cur_t, 0)
+
+    if cur_tier_idx > prev_tier_idx:
+        return f"promotion_tier:{cur_t} {cur_d}"
+    elif cur_tier_idx < prev_tier_idx:
+        return f"demotion_tier:{cur_t} {cur_d}"
+
+    # Same tier, check division
+    if prev_t == cur_t:
+        prev_div_num = DIV_NUM.get(prev_d, 4)
+        cur_div_num = DIV_NUM.get(cur_d, 4)
+
+        if cur_div_num < prev_div_num:  # Lower number = higher rank (I > II)
+            return f"promotion_div:{cur_t} {cur_d}"
+        elif cur_div_num > prev_div_num:
+            return f"demotion_div:{cur_t} {cur_d}"
+
+    return None
+
 # ─── Cog ─────────────────────────────────────────────────────────────────────
 class MatchAlertsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -325,6 +386,96 @@ class MatchAlertsCog(commands.Cog):
 
     async def _set_last_seen_match(self, puuid: str, mid: str):
         await r_set(f"last_seen_match:{puuid}", mid, ttl=90*24*3600)
+
+    # ─── Streak Management ────────────────────────────────────────────────
+    async def _update_streak(self, puuid: str, queue_id: int, win: bool) -> Tuple[int, bool]:
+        """Update match streak and return (streak_count, is_win_streak)."""
+        key = f"streak:{puuid}:{queue_id}"
+        raw = await r_get(key) or []
+
+        # Convert to list of "W" or "L"
+        if isinstance(raw, list):
+            streak_list = raw
+        else:
+            streak_list = []
+
+        # Add current result
+        streak_list.append("W" if win else "L")
+
+        # Keep only last 10
+        streak_list = streak_list[-10:]
+
+        # Save back
+        await r_set(key, streak_list, ttl=90*24*3600)
+
+        # Calculate current streak from end
+        if not streak_list:
+            return 0, True
+
+        current_result = streak_list[-1]
+        streak_count = 1
+
+        for i in range(len(streak_list) - 2, -1, -1):
+            if streak_list[i] == current_result:
+                streak_count += 1
+            else:
+                break
+
+        return streak_count, current_result == "W"
+
+    # ─── Personal Records ──────────────────────────────────────────────────
+    async def _check_personal_records(
+        self, puuid: str, champion: str, kda: float, cs: int, vision: int
+    ) -> List[str]:
+        """Check if player beat any personal records and return list of achievements."""
+        key = f"records:{puuid}:{champion}"
+        raw = await r_get(key) or {}
+
+        try:
+            records = {
+                "kda": float(raw.get("kda", 0)),
+                "cs": int(raw.get("cs", 0)),
+                "vision": int(raw.get("vision", 0))
+            }
+        except (AttributeError, ValueError, KeyError):
+            records = {"kda": 0, "cs": 0, "vision": 0}
+
+        achievements = []
+        updated = False
+
+        # Check KDA record
+        if kda > records["kda"]:
+            achievements.append(f"🎖️ Nouveau record KDA sur {champion}: {kda:.2f}")
+            records["kda"] = kda
+            updated = True
+
+        # Check CS record
+        if cs > records["cs"]:
+            achievements.append(f"🌾 Record de CS sur {champion}: {cs}")
+            records["cs"] = cs
+            updated = True
+
+        # Check vision record
+        if vision > records["vision"]:
+            achievements.append(f"👁️ Record de vision sur {champion}: {vision}")
+            records["vision"] = vision
+            updated = True
+
+        # Save updated records
+        if updated:
+            await r_set(key, records, ttl=365*24*3600)
+
+        return achievements
+
+    # ─── Total Games Counter ────────────────────────────────────────────────
+    async def _get_total_games(self, puuid: str, queue_id: int) -> int:
+        """Get total number of games played in this queue from database."""
+        try:
+            count = self.db.query(Match).filter_by(puuid=puuid, queue_id=queue_id).count()
+            return count
+        except Exception as e:
+            log.warning(f"Error counting total games: {e}")
+            return 0
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -439,6 +590,12 @@ class MatchAlertsCog(commands.Cog):
         self.lp_cache.setdefault(user.puuid, {})[queue_id] = cur_state
         await self._set_last_state(user.puuid, queue_id, cur_state)
 
+        # ── Feature 1: Streak Detection ──────────────────────────────────────
+        streak_count, is_win_streak = await self._update_streak(user.puuid, queue_id, part["win"])
+
+        # ── Feature 2: Rank Change Detection ──────────────────────────────────
+        rank_change = detect_rank_change(prev_state, cur_state)
+
         # Historique LP par file 30j
         now = int(time.time())
         hist_key = f"lp_hist:{user.puuid}:{queue_id}"
@@ -475,6 +632,19 @@ class MatchAlertsCog(commands.Cog):
                     except Exception:
                         duo_names.append(mate.puuid[:6])
 
+        # ── Feature 6: Personal Records ──────────────────────────────────────
+        kda_value = (part["kills"] + part["assists"]) / max(1, part["deaths"])
+        cs_value = part.get("totalMinionsKilled", 0) + part.get("neutralMinionsKilled", 0)
+        vision_value = part.get("visionScore", 0)
+        personal_records = await self._check_personal_records(
+            user.puuid, part["championName"], kda_value, cs_value, vision_value
+        )
+
+        # ── Feature 4: LP Trend Graph ─────────────────────────────────────────
+        # Extract last 10 LP values from history (sorted by timestamp)
+        lp_trend_data = sorted(hist.items())[-10:]  # Get last 10 entries
+        lp_values = [lp for _, lp in lp_trend_data] if lp_trend_data else []
+
         # persist match
         match = Match(
             match_id=mid,
@@ -497,7 +667,11 @@ class MatchAlertsCog(commands.Cog):
             tier, div, lp_now, lp_delta, wr,
             gold_diff, exp_diff, badges,
             opponent["championName"] if opponent else "?",
-            duo_names
+            duo_names,
+            streak_count, is_win_streak,
+            rank_change,
+            personal_records,
+            lp_values
         )
 
     async def _get_rank(self, user: User, queue_id: int) -> Tuple[str, str, int, int]:
@@ -523,17 +697,51 @@ class MatchAlertsCog(commands.Cog):
         tier: str, div: str, lp: int, lp_delta: int, wr: int,
         gold_diff: int, exp_diff: int,
         badges: List[str], opp_champ: str,
-        duo_names: List[str]
+        duo_names: List[str],
+        streak_count: int, is_win_streak: bool,
+        rank_change: Optional[str],
+        personal_records: List[str],
+        lp_values: List[int]
     ):
         log.info(f"Sending embed for {user.discord_id}")
         channel = self.bot.get_channel(settings.ALERT_CHANNEL_ID) or await self.bot.fetch_channel(settings.ALERT_CHANNEL_ID)
+
+        # ── Feature 5: Special Notifications ──────────────────────────────────
+        special_notification = ""
+        if rank_change:
+            if rank_change.startswith("promotion"):
+                _, rank_str = rank_change.split(":", 1)
+                special_notification = f"🎉 **PROMOTION !** Bienvenue en {rank_str} !\n"
+            elif rank_change.startswith("demotion"):
+                _, rank_str = rank_change.split(":", 1)
+                special_notification = f"📉 Demotion en {rank_str}\n"
+
+        # Check for milestones
+        total_games = await self._get_total_games(user.puuid, info["queueId"])
+        if total_games == 100:
+            special_notification += "🎯 **100 parties jouées !**\n"
+        if wr == 50 and total_games >= 10:
+            special_notification += "⚖️ **50% de winrate atteint !**\n"
+
+        # Build description with streak if >= 3
+        description_parts = [
+            f"**{RANKED_QUEUES[info['queueId']]}** · "
+            f"{dt.timedelta(seconds=info['gameDuration'])} · "
+            f"{ROLE_EMOJI.get(part.get('teamPosition','UNKNOWN'))}"
+        ]
+
+        # ── Feature 1: Streak Display ─────────────────────────────────────────
+        if streak_count >= 3:
+            if is_win_streak:
+                abs_delta = abs(lp_delta)
+                description_parts.append(f"\n🔥 **{streak_count} victoires d'affilée !** +{abs_delta} LP")
+            else:
+                abs_delta = abs(lp_delta)
+                description_parts.append(f"\n❄️ **Série noire : {streak_count} défaites** -{abs_delta} LP")
+
         embed = discord.Embed(
             color=0x2ECC71 if part["win"] else 0xE74C3C,
-            description=(
-                f"**{RANKED_QUEUES[info['queueId']]}** · "
-                f"{dt.timedelta(seconds=info['gameDuration'])} · "
-                f"{ROLE_EMOJI.get(part.get('teamPosition','UNKNOWN'))}"
-            ),
+            description=special_notification + "".join(description_parts),
             timestamp=dt.datetime.fromtimestamp(info["gameEndTimestamp"]//1000)
         )
         try:
@@ -554,12 +762,37 @@ class MatchAlertsCog(commands.Cog):
         pct = lp % 100
         filled = int(pct/(100/LP_BAR_LEN))
         bar = "█"*filled + "░"*(LP_BAR_LEN-filled)
-        embed.add_field(name="Rank", value=f"{tier} {div}\n{lp} LP ({lp_delta:+})\n{bar}\n{wr}% WR", inline=True)
+
+        # ── Feature 2: Rank Up/Down Prediction ────────────────────────────────
+        rank_value = f"{tier} {div}\n{lp} LP ({lp_delta:+})\n{bar}\n{wr}% WR"
+
+        # Promo prediction
+        if pct >= 75 and tier not in ["Master", "Grandmaster", "Challenger"]:
+            lp_needed = 100 - pct
+            wins_needed = max(1, int(lp_needed / 20))  # Assume ~20 LP per win
+            rank_value += f"\n🎯 Promo dans {lp_needed} LP ({wins_needed} victoire(s))"
+
+        # Demotion warning
+        if pct == 0 and not part["win"] and tier not in ["Master", "Grandmaster", "Challenger"]:
+            rank_value += f"\n⚠️ Attention demotion ! (0 LP)"
+
+        embed.add_field(name="Rank", value=rank_value, inline=True)
         embed.add_field(name="Stats", value=f"{EM_KDA} **{part['kills']}/{part['deaths']}/{part['assists']}**\n{EM_GOLD} ΔGold **{gold_diff:+}** · ΔXP **{exp_diff:+}**", inline=True)
         embed.add_field(name="Vision", value=f"{EM_VISION} {part.get('visionScore',0)}", inline=True)
         cs = part.get("totalMinionsKilled",0)+part.get("neutralMinionsKilled",0)
         embed.add_field(name="CS", value=f"{EM_CS} {cs} ({cs/(info['gameDuration']/60):.1f}/min)", inline=True)
         oog, breakdown = compute_oogscore(part, info["participants"])
+
+        # ── Feature 3: MVP Detection ───────────────────────────────────────────
+        all_oogscores = []
+        for p in info["participants"]:
+            p_score, _ = compute_oogscore(p, info["participants"])
+            all_oogscores.append((p["puuid"], p_score))
+
+        # Sort by score descending
+        all_oogscores.sort(key=lambda x: x[1], reverse=True)
+        player_rank = next((i+1 for i, (puuid, _) in enumerate(all_oogscores) if puuid == user.puuid), 0)
+
         if oog < 40:
             emo,label = "🟥","Grue bancale"
         elif oog < 70:
@@ -568,8 +801,27 @@ class MatchAlertsCog(commands.Cog):
             emo,label = "🟩","Maître du Jade"
         else:
             emo,label = "🟦","Skadoosh"
-        embed.add_field(name="OogScore", value=f"{emo} **{oog}/100** — {label}", inline=True)
+
+        oog_value = f"{emo} **{oog}/100** — {label}"
+        if player_rank == 1:
+            oog_value += f"\n🏆 **MVP de la game !**"
+        elif player_rank <= 3:
+            oog_value += f"\n🥉 Top 3 de la game (#{player_rank})"
+
+        embed.add_field(name="OogScore", value=oog_value, inline=True)
         embed.add_field(name="Badges", value=" · ".join(badges) or "—", inline=False)
+
+        # ── Feature 6: Personal Records ───────────────────────────────────────
+        if personal_records:
+            records_text = "\n".join(personal_records)
+            embed.add_field(name="Records Personnels", value=records_text, inline=False)
+
+        # ── Feature 4: LP Trend Graph ─────────────────────────────────────────
+        if lp_values and len(lp_values) >= 2:
+            lp_graph = make_lp_graph(lp_values)
+            embed.set_footer(text=f"Tendance LP (10 dernières parties)\n{lp_graph}")
+        else:
+            embed.set_footer(text=f"Partie #{total_games}")
 
         sprite = await make_sprite([part.get(f"item{i}",0) for i in range(7)], self.http)
         if sprite:
