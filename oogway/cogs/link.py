@@ -3,9 +3,10 @@
 import logging
 from discord import app_commands
 from discord.ext import commands
+from sqlalchemy.exc import SQLAlchemyError
 
 from oogway.database import SessionLocal, User, init_db
-from oogway.riot.client import RiotClient
+from oogway.riot.client import RiotClient, RiotAPIError
 from oogway.config import settings
 
 log = logging.getLogger("oogway.link")
@@ -23,7 +24,7 @@ class LinkCog(commands.Cog):
         name="link",
         description="Lier votre compte LoL (ex: `/link Rekkles` ou `/link PaSsiN0#3050`)."
     )
-    @app_commands.describe(summoner_name="Nom d’invocateur ou RiotID (avec #tagLine)")
+    @app_commands.describe(summoner_name="Nom d'invocateur ou RiotID (avec #tagLine)")
     async def link(
         self,
         interaction: commands.Context,
@@ -41,40 +42,58 @@ class LinkCog(commands.Cog):
         try:
             if "#" in identifier:
                 game, tag = identifier.split("#", 1)
-                acct = self.riot.get_account_by_name_tag(DEFAULT_REGION, game, tag)
+                acct = await self.riot.get_account_by_name_tag(DEFAULT_REGION, game, tag)
+                if not acct:
+                    raise ValueError(f"Account not found: {identifier}")
                 puuid = acct["puuid"]
                 real_name = acct["gameName"]
             else:
-                summ = self.riot.get_summoner_by_name(DEFAULT_REGION, identifier)
+                summ = await self.riot.get_summoner_by_name(DEFAULT_REGION, identifier)
+                if not summ:
+                    raise ValueError(f"Summoner not found: {identifier}")
                 puuid = summ["puuid"]
                 real_name = summ["name"]
-        except Exception:
-            log.exception(f"Erreur récupération de {identifier}")
+        except (RiotAPIError, ValueError) as e:
+            log.warning(f"Failed to find summoner {identifier}: {e}")
             return await interaction.followup.send(
                 f"❌ Impossible de trouver **{identifier}** en `{DEFAULT_REGION.upper()}`.",
                 ephemeral=True
             )
+        except Exception as e:
+            log.error(f"Unexpected error fetching {identifier}: {e}", exc_info=True)
+            return await interaction.followup.send(
+                "❌ Erreur inattendue lors de la recherche du compte.",
+                ephemeral=True
+            )
 
         discord_id = str(interaction.user.id)
-        session = SessionLocal()
-        user = session.get(User, discord_id)
-        if user:
-            user.puuid = puuid
-            user.summoner_name = real_name
-            user.region = DEFAULT_REGION
-            session.commit()
-            msg = f"🔄 Mise à jour du lien pour **{real_name}**."
-        else:
-            user = User(
-                discord_id=discord_id,
-                puuid=puuid,
-                summoner_name=real_name,
-                region=DEFAULT_REGION,
+
+        # Use context manager for DB session
+        try:
+            with SessionLocal() as session:
+                user = session.get(User, discord_id)
+                if user:
+                    user.puuid = puuid
+                    user.summoner_name = real_name
+                    user.region = DEFAULT_REGION
+                    session.commit()
+                    msg = f"🔄 Mise à jour du lien pour **{real_name}**."
+                else:
+                    user = User(
+                        discord_id=discord_id,
+                        puuid=puuid,
+                        summoner_name=real_name,
+                        region=DEFAULT_REGION,
+                    )
+                    session.add(user)
+                    session.commit()
+                    msg = f"✅ Compte lié : **{real_name}**."
+        except SQLAlchemyError as e:
+            log.error(f"Database error linking account: {e}", exc_info=True)
+            return await interaction.followup.send(
+                "❌ Erreur lors de la sauvegarde du lien.",
+                ephemeral=True
             )
-            session.add(user)
-            session.commit()
-            msg = f"✅ Compte lié : **{real_name}**."
-        session.close()
 
         await interaction.followup.send(msg, ephemeral=True)
 

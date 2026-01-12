@@ -20,10 +20,9 @@ logger = logging.getLogger(__name__)
 
 # ───────────────────────────── Helpers DB / Check ─────────────────
 def is_user_linked(uid: int) -> bool:
-    db = SessionLocal()
-    linked = db.query(User).filter_by(discord_id=str(uid)).first() is not None
-    db.close()
-    return linked
+    """Check if user is linked to a Riot account."""
+    with SessionLocal() as db:
+        return db.query(User).filter_by(discord_id=str(uid)).first() is not None
 
 
 def is_correct_channel(inter: Interaction) -> bool:

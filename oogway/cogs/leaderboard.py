@@ -221,6 +221,7 @@ class LeaderboardCog(commands.Cog):
 
     @with_retry()
     async def _get_rank(self, user: User, queue_id: int) -> Tuple[str, str, int, int, int, int]:
+        """Get player rank with caching - now fully async."""
         key = (user.puuid, queue_id)
         now = time.time()
         if key in self._rank_cache:
@@ -228,13 +229,9 @@ class LeaderboardCog(commands.Cog):
             if now - ts < self.CACHE_TTL:
                 return data
 
-        loop = asyncio.get_running_loop()
-        summ = await loop.run_in_executor(
-            None, self.riot.get_summoner_by_puuid, user.region, user.puuid
-        )
-        entries = await loop.run_in_executor(
-            None, self.riot.get_league_entries_by_puuid, user.region, user.puuid
-        )
+        # Now fully async - no run_in_executor needed
+        summ = await self.riot.get_summoner_by_puuid(user.region, user.puuid)
+        entries = await self.riot.get_league_entries_by_puuid(user.region, user.puuid)
 
         entry = next((e for e in entries if e["queueType"] == QUEUE_TYPE[queue_id]), None)
         if not entry:
