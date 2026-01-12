@@ -1,0 +1,302 @@
+{
+  "Jinx": {
+    "role": "ADC",
+    "winrate": 52.1,
+    "badges": [],
+    "counters": [
+      "Séraphine",
+      "Hwei",
+      "Kog'Maw"
+    ]
+  },
+  "Sivir": {
+    "role": "ADC",
+    "winrate": 52.42,
+    "badges": [],
+    "counters": [
+      "Twitch",
+      "Séraphine",
+      "Nilah"
+    ]
+  },
+  "Lucian": {
+    "role": "ADC",
+    "winrate": 51.23,
+    "badges": [],
+    "counters": [
+      "Nilah",
+      "Séraphine",
+      "Kog'Maw"
+    ]
+  },
+  "Smolder": {
+    "role": "ADC",
+    "winrate": 51.07,
+    "badges": [],
+    "counters": [
+      "Mel",
+      "Kog'Maw",
+      "Yasuo"
+    ]
+  },
+  "Vayne": {
+    "role": "ADC",
+    "winrate": 51.82,
+    "badges": [],
+    "counters": [
+      "Tristana",
+      "Smolder",
+      "Jinx"
+    ]
+  },
+  "Tristana": {
+    "role": "ADC",
+    "winrate": 51.61,
+    "badges": [],
+    "counters": [
+      "Nilah",
+      "Kog'Maw",
+      "Ziggs"
+    ]
+  },
+  "Jhin": {
+    "role": "ADC",
+    "winrate": 49.89,
+    "badges": [],
+    "counters": [
+      "Kog'Maw",
+      "Yasuo",
+      "Samira"
+    ]
+  },
+  "Kai'Sa": {
+    "role": "ADC",
+    "winrate": 49.43,
+    "badges": [],
+    "counters": [
+      "Swain",
+      "Kog'Maw",
+      "Nilah"
+    ]
+  },
+  "Caitlyn": {
+    "role": "ADC",
+    "winrate": 50.06,
+    "badges": [],
+    "counters": [
+      "Swain",
+      "Yasuo",
+      "Sivir"
+    ]
+  },
+  "Miss Fortune": {
+    "role": "ADC",
+    "winrate": 51.24,
+    "badges": [],
+    "counters": [
+      "Ziggs",
+      "Xayah",
+      "Nilah"
+    ]
+  },
+  "Twitch": {
+    "role": "ADC",
+    "winrate": 51.83,
+    "badges": [],
+    "counters": [
+      "Nilah",
+      "Yasuo",
+      "Swain"
+    ]
+  },
+  "Nilah": {
+    "role": "ADC",
+    "winrate": 53.06,
+    "badges": [],
+    "counters": [
+      "Hwei",
+      "Xayah",
+      "Kog'Maw"
+    ]
+  },
+  "Xayah": {
+    "role": "ADC",
+    "winrate": 51.21,
+    "badges": [],
+    "counters": [
+      "Hwei",
+      "Smolder",
+      "Sivir"
+    ]
+  },
+  "Kog'Maw": {
+    "role": "ADC",
+    "winrate": 53.45,
+    "badges": [],
+    "counters": [
+      "Hwei",
+      "Yasuo",
+      "Kalista"
+    ]
+  },
+  "Ashe": {
+    "role": "ADC",
+    "winrate": 50.94,
+    "badges": [],
+    "counters": [
+      "Twitch",
+      "Mel",
+      "Séraphine"
+    ]
+  },
+  "Aphelios": {
+    "role": "ADC",
+    "winrate": 50.11,
+    "badges": [],
+    "counters": [
+      "Yasuo",
+      "Hwei",
+      "Kog'Maw"
+    ]
+  },
+  "Samira": {
+    "role": "ADC",
+    "winrate": 50.96,
+    "badges": [],
+    "counters": [
+      "Nilah",
+      "Swain",
+      "Tristana"
+    ]
+  },
+  "Senna": {
+    "role": "ADC",
+    "winrate": 50.69,
+    "badges": [],
+    "counters": [
+      "Swain",
+      "Nilah",
+      "Tristana"
+    ]
+  },
+  "Zeri": {
+    "role": "ADC",
+    "winrate": 50.24,
+    "badges": [],
+    "counters": [
+      "Ziggs",
+      "Yasuo",
+      "Twitch"
+    ]
+  },
+  "Ezreal": {
+    "role": "ADC",
+    "winrate": 48.26,
+    "badges": [],
+    "counters": [
+      "Séraphine",
+      "Swain",
+      "Nilah"
+    ]
+  },
+  "Yasuo": {
+    "role": "ADC",
+    "winrate": 52.62,
+    "badges": [],
+    "counters": [
+      "Nilah",
+      "Sivir",
+      "Senna"
+    ]
+  },
+  "Draven": {
+    "role": "ADC",
+    "winrate": 49.23,
+    "badges": [],
+    "counters": [
+      "Kog'Maw",
+      "Yasuo",
+      "Nilah"
+    ]
+  },
+  "Hwei": {
+    "role": "ADC",
+    "winrate": 51.95,
+    "badges": [],
+    "counters": [
+      "Tristana",
+      "Vayne",
+      "Yasuo"
+    ]
+  },
+  "Swain": {
+    "role": "ADC",
+    "winrate": 52.48,
+    "badges": [],
+    "counters": [
+      "Kog'Maw",
+      "Smolder",
+      "Sivir"
+    ]
+  },
+  "Varus": {
+    "role": "ADC",
+    "winrate": 48.14,
+    "badges": [],
+    "counters": [
+      "Kog'Maw",
+      "Sivir",
+      "Mel"
+    ]
+  },
+  "Corki": {
+    "role": "ADC",
+    "winrate": 49.58,
+    "badges": [],
+    "counters": [
+      "Swain",
+      "Kog'Maw",
+      "Nilah"
+    ]
+  },
+  "Ziggs": {
+    "role": "ADC",
+    "winrate": 50.95,
+    "badges": [],
+    "counters": [
+      "Nilah",
+      "Hwei",
+      "Kog'Maw"
+    ]
+  },
+  "Mel": {
+    "role": "ADC",
+    "winrate": 49.7,
+    "badges": [],
+    "counters": [
+      "Twitch",
+      "Samira",
+      "Vayne"
+    ]
+  },
+  "Séraphine": {
+    "role": "ADC",
+    "winrate": 50.87,
+    "badges": [],
+    "counters": [
+      "Vayne",
+      "Senna",
+      "Samira"
+    ]
+  },
+  "Kalista": {
+    "role": "ADC",
+    "winrate": 45.93,
+    "badges": [],
+    "counters": [
+      "Draven",
+      "Samira",
+      "Jinx"
+    ]
+  }
+}

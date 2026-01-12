@@ -1,0 +1,14 @@
+nohup: les entrées sont ignorées
+INFO:     Started server process [191612]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:36742 - "GET /healthz HTTP/1.1" 200 OK
+INFO:     213.156.132.182:48616 - "GET /healthz HTTP/1.1" 200 OK
+INFO:     46.193.4.13:49542 - "GET / HTTP/1.1" 200 OK
+INFO:     46.193.4.13:49543 - "GET /favicon.ico HTTP/1.1" 404 Not Found
+INFO:     46.193.4.13:49542 - "GET /api/meta?top=10&min_picks=10 HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [191612]

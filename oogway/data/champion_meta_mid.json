@@ -1,0 +1,562 @@
+{
+  "Twisted Fate": {
+    "role": "Mid",
+    "winrate": 51.35,
+    "badges": [],
+    "counters": [
+      "Gragas",
+      "Annie",
+      "Neeko"
+    ]
+  },
+  "Zoé": {
+    "role": "Mid",
+    "winrate": 52.39,
+    "badges": [],
+    "counters": [
+      "Anivia",
+      "Naafiri",
+      "Malzahar"
+    ]
+  },
+  "Katarina": {
+    "role": "Mid",
+    "winrate": 51.52,
+    "badges": [],
+    "counters": [
+      "Kayle",
+      "Galio",
+      "Vladimir"
+    ]
+  },
+  "Sylas": {
+    "role": "Mid",
+    "winrate": 50.32,
+    "badges": [],
+    "counters": [
+      "Naafiri",
+      "Morgana",
+      "Taliyah"
+    ]
+  },
+  "Akali": {
+    "role": "Mid",
+    "winrate": 50.92,
+    "badges": [],
+    "counters": [
+      "Kennen",
+      "Qiyana",
+      "Akshan"
+    ]
+  },
+  "Yasuo": {
+    "role": "Mid",
+    "winrate": 50.36,
+    "badges": [],
+    "counters": [
+      "Cho'Gath",
+      "Gangplank",
+      "Gragas"
+    ]
+  },
+  "Diana": {
+    "role": "Mid",
+    "winrate": 51.85,
+    "badges": [],
+    "counters": [
+      "Gangplank",
+      "Swain",
+      "Anivia"
+    ]
+  },
+  "Xerath": {
+    "role": "Mid",
+    "winrate": 51.84,
+    "badges": [],
+    "counters": [
+      "Naafiri",
+      "Gangplank",
+      "Neeko"
+    ]
+  },
+  "Vex": {
+    "role": "Mid",
+    "winrate": 52.77,
+    "badges": [],
+    "counters": [
+      "Kennen",
+      "Malphite",
+      "Aurelion Sol"
+    ]
+  },
+  "Malzahar": {
+    "role": "Mid",
+    "winrate": 51.35,
+    "badges": [],
+    "counters": [
+      "Neeko",
+      "Talon",
+      "Quinn"
+    ]
+  },
+  "Zed": {
+    "role": "Mid",
+    "winrate": 50.11,
+    "badges": [],
+    "counters": [
+      "Qiyana",
+      "Quinn",
+      "Annie"
+    ]
+  },
+  "Vladimir": {
+    "role": "Mid",
+    "winrate": 51.32,
+    "badges": [],
+    "counters": [
+      "Naafiri",
+      "Vel'Koz",
+      "Anivia"
+    ]
+  },
+  "Galio": {
+    "role": "Mid",
+    "winrate": 51.32,
+    "badges": [],
+    "counters": [
+      "Quinn",
+      "Vex",
+      "Vel'Koz"
+    ]
+  },
+  "LeBlanc": {
+    "role": "Mid",
+    "winrate": 50.67,
+    "badges": [],
+    "counters": [
+      "Naafiri",
+      "Gangplank",
+      "Quinn"
+    ]
+  },
+  "Annie": {
+    "role": "Mid",
+    "winrate": 52.16,
+    "badges": [],
+    "counters": [
+      "Neeko",
+      "Naafiri",
+      "Cassiopeia"
+    ]
+  },
+  "Lissandra": {
+    "role": "Mid",
+    "winrate": 51.85,
+    "badges": [],
+    "counters": [
+      "Neeko",
+      "Morgana",
+      "Gangplank"
+    ]
+  },
+  "Syndra": {
+    "role": "Mid",
+    "winrate": 50.7,
+    "badges": [],
+    "counters": [
+      "Katarina",
+      "Gangplank",
+      "Malphite"
+    ]
+  },
+  "Lux": {
+    "role": "Mid",
+    "winrate": 51.25,
+    "badges": [],
+    "counters": [
+      "Naafiri",
+      "Cho'Gath",
+      "Vel'Koz"
+    ]
+  },
+  "Akshan": {
+    "role": "Mid",
+    "winrate": 52.3,
+    "badges": [],
+    "counters": [
+      "Anivia",
+      "Jayce",
+      "Malphite"
+    ]
+  },
+  "Anivia": {
+    "role": "Mid",
+    "winrate": 52.47,
+    "badges": [],
+    "counters": [
+      "Morgana",
+      "Neeko",
+      "Ekko"
+    ]
+  },
+  "Hwei": {
+    "role": "Mid",
+    "winrate": 50.39,
+    "badges": [],
+    "counters": [
+      "Naafiri",
+      "Quinn",
+      "Neeko"
+    ]
+  },
+  "Ahri": {
+    "role": "Mid",
+    "winrate": 49.42,
+    "badges": [],
+    "counters": [
+      "Morgana",
+      "Gragas",
+      "Quinn"
+    ]
+  },
+  "Orianna": {
+    "role": "Mid",
+    "winrate": 50.22,
+    "badges": [],
+    "counters": [
+      "Kennen",
+      "Naafiri",
+      "Malphite"
+    ]
+  },
+  "Viktor": {
+    "role": "Mid",
+    "winrate": 49.79,
+    "badges": [],
+    "counters": [
+      "Zoé",
+      "Kayle",
+      "Akali"
+    ]
+  },
+  "Ekko": {
+    "role": "Mid",
+    "winrate": 50.86,
+    "badges": [],
+    "counters": [
+      "Lissandra",
+      "Malphite",
+      "Talon"
+    ]
+  },
+  "Quinn": {
+    "role": "Mid",
+    "winrate": 54.1,
+    "badges": [],
+    "counters": [
+      "Akshan",
+      "Aurora",
+      "Irelia"
+    ]
+  },
+  "Kayle": {
+    "role": "Mid",
+    "winrate": 52.27,
+    "badges": [],
+    "counters": [
+      "Malphite",
+      "Swain",
+      "Neeko"
+    ]
+  },
+  "Aurora": {
+    "role": "Mid",
+    "winrate": 50.37,
+    "badges": [],
+    "counters": [
+      "Gangplank",
+      "Aurelion Sol",
+      "Annie"
+    ]
+  },
+  "Qiyana": {
+    "role": "Mid",
+    "winrate": 51.4,
+    "badges": [],
+    "counters": [
+      "Quinn",
+      "Neeko",
+      "Gragas"
+    ]
+  },
+  "Veigar": {
+    "role": "Mid",
+    "winrate": 50.77,
+    "badges": [],
+    "counters": [
+      "Gangplank",
+      "Quinn",
+      "Xerath"
+    ]
+  },
+  "Talon": {
+    "role": "Mid",
+    "winrate": 51.07,
+    "badges": [],
+    "counters": [
+      "Naafiri",
+      "Gangplank",
+      "Lissandra"
+    ]
+  },
+  "Vel'Koz": {
+    "role": "Mid",
+    "winrate": 52.33,
+    "badges": [],
+    "counters": [
+      "Katarina",
+      "Aurora",
+      "Fizz"
+    ]
+  },
+  "Malphite": {
+    "role": "Mid",
+    "winrate": 52.86,
+    "badges": [],
+    "counters": [
+      "Annie",
+      "Lux",
+      "Ryze"
+    ]
+  },
+  "Kennen": {
+    "role": "Mid",
+    "winrate": 52.5,
+    "badges": [],
+    "counters": [
+      "Taliyah",
+      "Quinn",
+      "Katarina"
+    ]
+  },
+  "Fizz": {
+    "role": "Mid",
+    "winrate": 50.42,
+    "badges": [],
+    "counters": [
+      "Quinn",
+      "Cassiopeia",
+      "Morgana"
+    ]
+  },
+  "Aurelion Sol": {
+    "role": "Mid",
+    "winrate": 50.79,
+    "badges": [],
+    "counters": [
+      "Quinn",
+      "Naafiri",
+      "Kayle"
+    ]
+  },
+  "Taliyah": {
+    "role": "Mid",
+    "winrate": 50.18,
+    "badges": [],
+    "counters": [
+      "Cho'Gath",
+      "Malphite",
+      "Veigar"
+    ]
+  },
+  "Kassadin": {
+    "role": "Mid",
+    "winrate": 50.26,
+    "badges": [],
+    "counters": [
+      "Quinn",
+      "Cho'Gath",
+      "Swain"
+    ]
+  },
+  "Swain": {
+    "role": "Mid",
+    "winrate": 52.02,
+    "badges": [],
+    "counters": [
+      "Cassiopeia",
+      "Ekko",
+      "Syndra"
+    ]
+  },
+  "Irelia": {
+    "role": "Mid",
+    "winrate": 49.66,
+    "badges": [],
+    "counters": [
+      "Swain",
+      "Malphite",
+      "Galio"
+    ]
+  },
+  "Naafiri": {
+    "role": "Mid",
+    "winrate": 52.28,
+    "badges": [],
+    "counters": [
+      "Veigar",
+      "Ekko",
+      "Diana"
+    ]
+  },
+  "Cassiopeia": {
+    "role": "Mid",
+    "winrate": 51.2,
+    "badges": [],
+    "counters": [
+      "Jayce",
+      "Kayle",
+      "Kennen"
+    ]
+  },
+  "Mel": {
+    "role": "Mid",
+    "winrate": 47.74,
+    "badges": [],
+    "counters": [
+      "Fizz",
+      "Kayle",
+      "Ekko"
+    ]
+  },
+  "Ryze": {
+    "role": "Mid",
+    "winrate": 48.68,
+    "badges": [],
+    "counters": [
+      "Morgana",
+      "Kayle",
+      "Ziggs"
+    ]
+  },
+  "Gragas": {
+    "role": "Mid",
+    "winrate": 51.48,
+    "badges": [],
+    "counters": [
+      "Anivia",
+      "Veigar",
+      "Syndra"
+    ]
+  },
+  "Morgana": {
+    "role": "Mid",
+    "winrate": 52.05,
+    "badges": [],
+    "counters": [
+      "Talon",
+      "Taliyah",
+      "Akshan"
+    ]
+  },
+  "Neeko": {
+    "role": "Mid",
+    "winrate": 51.59,
+    "badges": [],
+    "counters": [
+      "Zed",
+      "Akshan",
+      "Katarina"
+    ]
+  },
+  "Gangplank": {
+    "role": "Mid",
+    "winrate": 51.76,
+    "badges": [],
+    "counters": [
+      "Kayle",
+      "Ekko",
+      "Aurelion Sol"
+    ]
+  },
+  "Yone": {
+    "role": "Mid",
+    "winrate": 47.08,
+    "badges": [],
+    "counters": [
+      "Kennen",
+      "Lissandra",
+      "Quinn"
+    ]
+  },
+  "Cho'Gath": {
+    "role": "Mid",
+    "winrate": 51.09,
+    "badges": [],
+    "counters": [
+      "Qiyana",
+      "Vladimir",
+      "Cassiopeia"
+    ]
+  },
+  "Azir": {
+    "role": "Mid",
+    "winrate": 47.12,
+    "badges": [],
+    "counters": [
+      "Jayce",
+      "Vel'Koz",
+      "Qiyana"
+    ]
+  },
+  "Jayce": {
+    "role": "Mid",
+    "winrate": 49.12,
+    "badges": [],
+    "counters": [
+      "Kassadin",
+      "Vladimir",
+      "Galio"
+    ]
+  },
+  "Ziggs": {
+    "role": "Mid",
+    "winrate": 49.18,
+    "badges": [],
+    "counters": [
+      "Talon",
+      "Akshan",
+      "Zed"
+    ]
+  },
+  "Smolder": {
+    "role": "Mid",
+    "winrate": 46.5,
+    "badges": [],
+    "counters": [
+      "Quinn",
+      "Fizz",
+      "Xerath"
+    ]
+  },
+  "Corki": {
+    "role": "Mid",
+    "winrate": 45.67,
+    "badges": [],
+    "counters": [
+      "Cassiopeia",
+      "Akshan",
+      "Vladimir"
+    ]
+  },
+  "Tristana": {
+    "role": "Mid",
+    "winrate": 45.65,
+    "badges": [],
+    "counters": [
+      "Diana",
+      "Corki",
+      "Vladimir"
+    ]
+  }
+}

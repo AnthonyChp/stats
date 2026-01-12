@@ -1,0 +1,502 @@
+{
+  "Lee Sin": {
+    "role": "Jungle",
+    "winrate": 50.84,
+    "badges": [],
+    "counters": [
+      "Taliyah",
+      "Rek'Sai",
+      "Briar"
+    ]
+  },
+  "Jarvan IV": {
+    "role": "Jungle",
+    "winrate": 51.75,
+    "badges": [],
+    "counters": [
+      "Warwick",
+      "Briar",
+      "Gwen"
+    ]
+  },
+  "Trundle": {
+    "role": "Jungle",
+    "winrate": 52.59,
+    "badges": [],
+    "counters": [
+      "Ivern",
+      "Nunu et Willump",
+      "Fiddlesticks"
+    ]
+  },
+  "Nocturne": {
+    "role": "Jungle",
+    "winrate": 51.64,
+    "badges": [],
+    "counters": [
+      "Nunu et Willump",
+      "Warwick",
+      "Jarvan IV"
+    ]
+  },
+  "Briar": {
+    "role": "Jungle",
+    "winrate": 52.39,
+    "badges": [],
+    "counters": [
+      "Trundle",
+      "Maître Yi",
+      "Dr. Mundo"
+    ]
+  },
+  "Warwick": {
+    "role": "Jungle",
+    "winrate": 52.67,
+    "badges": [],
+    "counters": [
+      "Karthus",
+      "Taliyah",
+      "Volibear"
+    ]
+  },
+  "Ekko": {
+    "role": "Jungle",
+    "winrate": 51.47,
+    "badges": [],
+    "counters": [
+      "Qiyana",
+      "Lee Sin",
+      "Fiddlesticks"
+    ]
+  },
+  "Kha'Zix": {
+    "role": "Jungle",
+    "winrate": 51.26,
+    "badges": [],
+    "counters": [
+      "Briar",
+      "Naafiri",
+      "Rengar"
+    ]
+  },
+  "Volibear": {
+    "role": "Jungle",
+    "winrate": 51.96,
+    "badges": [],
+    "counters": [
+      "Jax",
+      "Qiyana",
+      "Zyra"
+    ]
+  },
+  "Fiddlesticks": {
+    "role": "Jungle",
+    "winrate": 52.38,
+    "badges": [],
+    "counters": [
+      "Taliyah",
+      "Volibear",
+      "Karthus"
+    ]
+  },
+  "Pantheon": {
+    "role": "Jungle",
+    "winrate": 50.83,
+    "badges": [],
+    "counters": [
+      "Karthus",
+      "Ivern",
+      "Zac"
+    ]
+  },
+  "Maître Yi": {
+    "role": "Jungle",
+    "winrate": 51.79,
+    "badges": [],
+    "counters": [
+      "Jax",
+      "Bel'Veth",
+      "Elise"
+    ]
+  },
+  "Shaco": {
+    "role": "Jungle",
+    "winrate": 51.17,
+    "badges": [],
+    "counters": [
+      "Rek'Sai",
+      "Briar",
+      "Nocturne"
+    ]
+  },
+  "Kayn": {
+    "role": "Jungle",
+    "winrate": 50.62,
+    "badges": [],
+    "counters": [
+      "Rek'Sai",
+      "Fiddlesticks",
+      "Bel'Veth"
+    ]
+  },
+  "Diana": {
+    "role": "Jungle",
+    "winrate": 51.02,
+    "badges": [],
+    "counters": [
+      "Maître Yi",
+      "Warwick",
+      "Volibear"
+    ]
+  },
+  "Xin Zhao": {
+    "role": "Jungle",
+    "winrate": 50.85,
+    "badges": [],
+    "counters": [
+      "Jax",
+      "Volibear",
+      "Briar"
+    ]
+  },
+  "Viego": {
+    "role": "Jungle",
+    "winrate": 49.22,
+    "badges": [],
+    "counters": [
+      "Qiyana",
+      "Elise",
+      "Ekko"
+    ]
+  },
+  "Wukong": {
+    "role": "Jungle",
+    "winrate": 51.12,
+    "badges": [],
+    "counters": [
+      "Ivern",
+      "Rammus",
+      "Shyvana"
+    ]
+  },
+  "Nunu et Willump": {
+    "role": "Jungle",
+    "winrate": 51.58,
+    "badges": [],
+    "counters": [
+      "Poppy",
+      "Zyra",
+      "Qiyana"
+    ]
+  },
+  "Kindred": {
+    "role": "Jungle",
+    "winrate": 50.77,
+    "badges": [],
+    "counters": [
+      "Zyra",
+      "Ivern",
+      "Trundle"
+    ]
+  },
+  "Talon": {
+    "role": "Jungle",
+    "winrate": 50.38,
+    "badges": [],
+    "counters": [
+      "Gragas",
+      "Gwen",
+      "Rek'Sai"
+    ]
+  },
+  "Ivern": {
+    "role": "Jungle",
+    "winrate": 52.07,
+    "badges": [],
+    "counters": [
+      "Shaco",
+      "Briar",
+      "Poppy"
+    ]
+  },
+  "Graves": {
+    "role": "Jungle",
+    "winrate": 49.79,
+    "badges": [],
+    "counters": [
+      "Zyra",
+      "Fiddlesticks",
+      "Warwick"
+    ]
+  },
+  "Elise": {
+    "role": "Jungle",
+    "winrate": 50.65,
+    "badges": [],
+    "counters": [
+      "Dr. Mundo",
+      "Rammus",
+      "Briar"
+    ]
+  },
+  "Jax": {
+    "role": "Jungle",
+    "winrate": 51.71,
+    "badges": [],
+    "counters": [
+      "Naafiri",
+      "Zac",
+      "Nunu et Willump"
+    ]
+  },
+  "Nidalee": {
+    "role": "Jungle",
+    "winrate": 50.05,
+    "badges": [],
+    "counters": [
+      "Gwen",
+      "Warwick",
+      "Qiyana"
+    ]
+  },
+  "Zac": {
+    "role": "Jungle",
+    "winrate": 50.68,
+    "badges": [],
+    "counters": [
+      "Volibear",
+      "Qiyana",
+      "Ivern"
+    ]
+  },
+  "Udyr": {
+    "role": "Jungle",
+    "winrate": 50.99,
+    "badges": [],
+    "counters": [
+      "Jax",
+      "Jarvan IV",
+      "Evelynn"
+    ]
+  },
+  "Bel'Veth": {
+    "role": "Jungle",
+    "winrate": 51.31,
+    "badges": [],
+    "counters": [
+      "Poppy",
+      "Taliyah",
+      "Kindred"
+    ]
+  },
+  "Rammus": {
+    "role": "Jungle",
+    "winrate": 51.71,
+    "badges": [],
+    "counters": [
+      "Trundle",
+      "Jax",
+      "Gwen"
+    ]
+  },
+  "Evelynn": {
+    "role": "Jungle",
+    "winrate": 50.74,
+    "badges": [],
+    "counters": [
+      "Rammus",
+      "Taliyah",
+      "Fiddlesticks"
+    ]
+  },
+  "Naafiri": {
+    "role": "Jungle",
+    "winrate": 50.04,
+    "badges": [],
+    "counters": [
+      "Rammus",
+      "Nocturne",
+      "Gragas"
+    ]
+  },
+  "Hecarim": {
+    "role": "Jungle",
+    "winrate": 49.83,
+    "badges": [],
+    "counters": [
+      "Ivern",
+      "Karthus",
+      "Udyr"
+    ]
+  },
+  "Rek'Sai": {
+    "role": "Jungle",
+    "winrate": 51.78,
+    "badges": [],
+    "counters": [
+      "Nunu et Willump",
+      "Poppy",
+      "Karthus"
+    ]
+  },
+  "Rengar": {
+    "role": "Jungle",
+    "winrate": 49.98,
+    "badges": [],
+    "counters": [
+      "Skarner",
+      "Poppy",
+      "Briar"
+    ]
+  },
+  "Gwen": {
+    "role": "Jungle",
+    "winrate": 51.25,
+    "badges": [],
+    "counters": [
+      "Fiddlesticks",
+      "Maître Yi",
+      "Bel'Veth"
+    ]
+  },
+  "Poppy": {
+    "role": "Jungle",
+    "winrate": 51.23,
+    "badges": [],
+    "counters": [
+      "Shaco",
+      "Warwick",
+      "Jax"
+    ]
+  },
+  "Zed": {
+    "role": "Jungle",
+    "winrate": 47.65,
+    "badges": [],
+    "counters": [
+      "Zyra",
+      "Rammus",
+      "Warwick"
+    ]
+  },
+  "Amumu": {
+    "role": "Jungle",
+    "winrate": 50.06,
+    "badges": [],
+    "counters": [
+      "Taliyah",
+      "Ivern",
+      "Rek'Sai"
+    ]
+  },
+  "Lillia": {
+    "role": "Jungle",
+    "winrate": 49.34,
+    "badges": [],
+    "counters": [
+      "Zyra",
+      "Ivern",
+      "Gragas"
+    ]
+  },
+  "Karthus": {
+    "role": "Jungle",
+    "winrate": 50.07,
+    "badges": [],
+    "counters": [
+      "Taliyah",
+      "Gragas",
+      "Udyr"
+    ]
+  },
+  "Vi": {
+    "role": "Jungle",
+    "winrate": 48.42,
+    "badges": [],
+    "counters": [
+      "Shyvana",
+      "Jarvan IV",
+      "Taliyah"
+    ]
+  },
+  "Gragas": {
+    "role": "Jungle",
+    "winrate": 50.2,
+    "badges": [],
+    "counters": [
+      "Jax",
+      "Ivern",
+      "Udyr"
+    ]
+  },
+  "Dr. Mundo": {
+    "role": "Jungle",
+    "winrate": 49.22,
+    "badges": [],
+    "counters": [
+      "Taliyah",
+      "Rammus",
+      "Trundle"
+    ]
+  },
+  "Taliyah": {
+    "role": "Jungle",
+    "winrate": 50.73,
+    "badges": [],
+    "counters": [
+      "Nunu et Willump",
+      "Rengar",
+      "Rammus"
+    ]
+  },
+  "Zyra": {
+    "role": "Jungle",
+    "winrate": 50.24,
+    "badges": [],
+    "counters": [
+      "Sejuani",
+      "Jarvan IV",
+      "Karthus"
+    ]
+  },
+  "Shyvana": {
+    "role": "Jungle",
+    "winrate": 48.97,
+    "badges": [],
+    "counters": [
+      "Zyra",
+      "Nunu et Willump",
+      "Gwen"
+    ]
+  },
+  "Qiyana": {
+    "role": "Jungle",
+    "winrate": 49.78,
+    "badges": [],
+    "counters": [
+      "Briar",
+      "Rengar",
+      "Fiddlesticks"
+    ]
+  },
+  "Sejuani": {
+    "role": "Jungle",
+    "winrate": 48.02,
+    "badges": [],
+    "counters": [
+      "Skarner",
+      "Jarvan IV",
+      "Rek'Sai"
+    ]
+  },
+  "Skarner": {
+    "role": "Jungle",
+    "winrate": 46.29,
+    "badges": [],
+    "counters": [
+      "Nunu et Willump",
+      "Udyr",
+      "Lillia"
+    ]
+  }
+}
