@@ -3,9 +3,9 @@
 # -------------------------------------------------------------
 # /profil – Fiche League of Legends
 # Pages :
-#   0. Résumé            3. Courbe LP 30 j
+#   0. Résumé            3. Courbe LP 30 j (NOUVEAU DESIGN)
 #   1. Dernière partie   4. Synergie mates
-#   2. (Heat-map, etc.)  ← slots libres pour la suite
+#   2. Heat-map perf     5. (slot libre)
 # =============================================================
 
 from __future__ import annotations
@@ -17,6 +17,8 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from matplotlib.dates import DateFormatter
 
 import discord
 from discord import Interaction, app_commands
@@ -78,7 +80,16 @@ EMOJI_TIER = {"IRON":"♙","BRONZE":"♘","SILVER":"♗","GOLD":"♖","PLATINUM"
 ROLE_EMOJI = {"TOP":"🛡️ Top","JUNGLE":"🌲 Jungle","MIDDLE":"🎯 Mid",
               "BOTTOM":"🏹 ADC","UTILITY":"✨ Support","NONE":"❔"}
 
-# palette LoL
+# palette LoL moderne pour les graphiques
+BG_COLOR = '#0a1428'
+GRID_COLOR = '#1e2d3d'
+GOLD_COLOR = '#c89b3c'
+WIN_COLOR = '#2ecc71'
+LOSS_COLOR = '#e74c3c'
+TEXT_COLOR = '#f0f0f0'
+ACCENT_COLOR = '#785a28'
+
+# Couleurs Discord
 COLOR_BG   = discord.Colour.from_rgb(26, 35, 46)   # #1a232e
 COLOR_GOLD = discord.Colour.from_rgb(200, 155, 60) # #c89b3c
 
@@ -124,34 +135,295 @@ def make_sprite_sync(item_ids: list[int]) -> discord.File | None:
     buf = io.BytesIO(); sprite.save(buf, "PNG"); buf.seek(0)
     return discord.File(buf, filename="build.png")
 
-# ---------- QuickChart pour la courbe LP --------------------
-def quickchart_lp(lp_hist: dict[int, int]) -> str:
+# =============================================================
+# ------------- Graphiques modernes ---------------------------
+# =============================================================
+
+def create_modern_lp_curve(lp_hist: dict, matches: list, puuid: str) -> discord.File:
+    """
+    Crée une courbe LP moderne avec :
+    - Design dark LoL
+    - Gradient de fond
+    - Marqueurs victoire/défaite
+    - Stats intégrées
+    - Trend line
+    """
+    if not lp_hist or len(lp_hist) < 2:
+        return None
+    
+    # Préparer les données
     data = sorted(lp_hist.items())
-    labels = [dt.datetime.fromtimestamp(k).strftime('%d %b') for k, _ in data]
-    values = [v for _, v in data]
-    cfg = {
-        "type": "line",
-        "data": {"labels": labels,
-                 "datasets": [{
-                     "data": values,
-                     "borderColor": "#c89b3c",
-                     "borderWidth": 3,
-                     "fill": False,
-                     "tension": .35,
-                     "pointRadius": 0}]},
-        "options": {
-            "backgroundColor": "#0d1117",
-            "layout": {"padding": 14},
-            "plugins": {"legend": {"display": False}},
-            "scales": {
-                "x": {"ticks": {"color": "#f0f0f0", "maxRotation": 0},
-                      "grid": {"display": False}},
-                "y": {"ticks": {"color": "#f0f0f0"},
-                      "grid": {"color": "rgba(255,255,255,0.08)"}}
-            }
-        }
-    }
-    return f"https://quickchart.io/chart?c={_uq.quote(json.dumps(cfg), safe='')}"
+    timestamps = [dt.datetime.fromtimestamp(int(k)) for k, _ in data]
+    lp_values = [v for _, v in data]
+    
+    # Calculer la trend line
+    x_numeric = np.arange(len(lp_values))
+    z = np.polyfit(x_numeric, lp_values, 1)
+    trend_line = np.poly1d(z)
+    
+    # Stats
+    lp_start = lp_values[0]
+    lp_end = lp_values[-1]
+    lp_delta = lp_end - lp_start
+    lp_max = max(lp_values)
+    lp_min = min(lp_values)
+    lp_range = lp_max - lp_min if lp_max != lp_min else 1
+    
+    # Extraire résultats des 20 dernières games (pour marqueurs)
+    game_results = []
+    for match in matches[:20]:
+        info = match.get("info", {})
+        game_time = info.get("gameEndTimestamp", info.get("gameCreation", 0)) / 1000
+        
+        # Trouver le participant
+        part = next((p for p in info.get("participants", []) 
+                    if p.get("puuid") == puuid), None)
+        
+        if part and info.get("queueId") == 420:  # Solo/Duo uniquement
+            game_results.append({
+                "time": dt.datetime.fromtimestamp(game_time),
+                "win": part.get("win", False)
+            })
+    
+    # === CRÉATION DU GRAPHIQUE ===
+    fig, ax = plt.subplots(figsize=(12, 6), facecolor=BG_COLOR)
+    ax.set_facecolor(BG_COLOR)
+    
+    # Gradient de fond subtil
+    y_gradient = np.linspace(0, 1, 100).reshape(-1, 1)
+    gradient = np.hstack([y_gradient] * 100)
+    extent = [timestamps[0], timestamps[-1], lp_min - lp_range * 0.1, lp_max + lp_range * 0.1]
+    ax.imshow(gradient, extent=extent, aspect='auto', alpha=0.03, 
+              cmap='YlOrBr', origin='lower')
+    
+    # Zone de promo (si proche de 100 LP)
+    if any(lp >= 75 for lp in lp_values):
+        promo_line = 100
+        ax.axhline(y=promo_line, color=GOLD_COLOR, linestyle='--', 
+                   linewidth=1.5, alpha=0.3, label='Promo')
+        ax.fill_between(timestamps, promo_line, lp_max + lp_range * 0.1, 
+                       color=GOLD_COLOR, alpha=0.05)
+    
+    # Trend line (pointillés)
+    ax.plot(timestamps, trend_line(x_numeric), color=ACCENT_COLOR, 
+            linestyle=':', linewidth=2, alpha=0.6, label='Tendance')
+    
+    # Courbe LP principale avec glow effect
+    for i in range(3):
+        alpha = 0.1 * (3 - i)
+        width = 4 + i * 2
+        ax.plot(timestamps, lp_values, color=GOLD_COLOR, 
+                linewidth=width, alpha=alpha, solid_capstyle='round')
+    
+    # Courbe principale
+    ax.plot(timestamps, lp_values, color=GOLD_COLOR, 
+           linewidth=3, marker='o', markersize=6, 
+           markeredgecolor='white', markeredgewidth=1.5,
+           label='LP', zorder=5)
+    
+    # Marqueurs victoires/défaites sur la courbe
+    for game in game_results:
+        # Trouver le point LP le plus proche dans le temps
+        closest_idx = min(range(len(timestamps)), 
+                         key=lambda i: abs((timestamps[i] - game["time"]).total_seconds()))
+        
+        if closest_idx < len(timestamps):
+            marker_color = WIN_COLOR if game["win"] else LOSS_COLOR
+            marker = '^' if game["win"] else 'v'
+            ax.scatter(timestamps[closest_idx], lp_values[closest_idx], 
+                      s=100, c=marker_color, marker=marker, 
+                      edgecolors='white', linewidths=1.5, zorder=10, alpha=0.8)
+    
+    # Annoter les points extrêmes
+    max_idx = lp_values.index(lp_max)
+    min_idx = lp_values.index(lp_min)
+    
+    ax.annotate(f'{lp_max} LP', 
+                xy=(timestamps[max_idx], lp_max),
+                xytext=(0, 15), textcoords='offset points',
+                ha='center', fontsize=9, color=WIN_COLOR,
+                bbox=dict(boxstyle='round,pad=0.3', facecolor=BG_COLOR, 
+                         edgecolor=WIN_COLOR, alpha=0.8),
+                arrowprops=dict(arrowstyle='->', color=WIN_COLOR, lw=1.5))
+    
+    if lp_min != lp_max:
+        ax.annotate(f'{lp_min} LP', 
+                    xy=(timestamps[min_idx], lp_min),
+                    xytext=(0, -15), textcoords='offset points',
+                    ha='center', fontsize=9, color=LOSS_COLOR,
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor=BG_COLOR, 
+                             edgecolor=LOSS_COLOR, alpha=0.8),
+                    arrowprops=dict(arrowstyle='->', color=LOSS_COLOR, lw=1.5))
+    
+    # Styling des axes
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['bottom'].set_color(GRID_COLOR)
+    ax.spines['left'].set_color(GRID_COLOR)
+    ax.spines['bottom'].set_linewidth(2)
+    ax.spines['left'].set_linewidth(2)
+    
+    # Grille subtile
+    ax.grid(True, alpha=0.15, color=GRID_COLOR, linestyle='-', linewidth=1)
+    ax.set_axisbelow(True)
+    
+    # Labels et titres
+    ax.set_xlabel('Date', fontsize=11, color=TEXT_COLOR, fontweight='bold')
+    ax.set_ylabel('LP', fontsize=11, color=TEXT_COLOR, fontweight='bold')
+    
+    # Format des dates
+    ax.xaxis.set_major_formatter(DateFormatter('%d %b'))
+    plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
+    
+    # Couleur des ticks
+    ax.tick_params(colors=TEXT_COLOR, which='both', labelsize=9)
+    
+    # Titre avec stats
+    delta_symbol = '▲' if lp_delta >= 0 else '▼'
+    
+    title = f'Progression LP - Dernier mois'
+    ax.text(0.5, 1.08, title, transform=ax.transAxes, 
+            fontsize=14, fontweight='bold', color=GOLD_COLOR, 
+            ha='center', va='top')
+    
+    # Sous-titre avec delta
+    subtitle = f'{delta_symbol} {abs(lp_delta):+.0f} LP  •  Range: {lp_min}-{lp_max} LP'
+    ax.text(0.5, 1.02, subtitle, transform=ax.transAxes, 
+            fontsize=10, color=TEXT_COLOR, ha='center', va='top', alpha=0.8)
+    
+    # Légende personnalisée
+    legend_elements = [
+        mpatches.Patch(color=WIN_COLOR, label='Victoire'),
+        mpatches.Patch(color=LOSS_COLOR, label='Défaite'),
+        plt.Line2D([0], [0], color=GOLD_COLOR, linewidth=3, label='LP'),
+        plt.Line2D([0], [0], color=ACCENT_COLOR, linewidth=2, 
+                   linestyle=':', label='Tendance')
+    ]
+    
+    legend = ax.legend(handles=legend_elements, loc='upper left', 
+                      framealpha=0.9, facecolor=BG_COLOR, 
+                      edgecolor=GRID_COLOR, fontsize=9)
+    plt.setp(legend.get_texts(), color=TEXT_COLOR)
+    
+    # Box avec stats en bas à droite
+    stats_text = (
+        f'Départ: {lp_start} LP\n'
+        f'Actuel: {lp_end} LP\n'
+        f'Peak: {lp_max} LP'
+    )
+    
+    props = dict(boxstyle='round,pad=0.5', facecolor=BG_COLOR, 
+                 edgecolor=GRID_COLOR, alpha=0.9, linewidth=2)
+    ax.text(0.98, 0.02, stats_text, transform=ax.transAxes, 
+            fontsize=9, color=TEXT_COLOR, ha='right', va='bottom',
+            bbox=props, family='monospace')
+    
+    plt.tight_layout()
+    
+    # Sauvegarder
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight', 
+                facecolor=BG_COLOR, edgecolor='none')
+    plt.close(fig)
+    buf.seek(0)
+    
+    return discord.File(buf, filename='lp_curve.png')
+
+
+def create_performance_heatmap(matches: list, puuid: str) -> discord.File:
+    """
+    Crée une heatmap des performances par rôle et heure de la journée
+    """
+    # Préparer les données
+    role_map = {'TOP': 0, 'JUNGLE': 1, 'MIDDLE': 2, 'BOTTOM': 3, 'UTILITY': 4}
+    
+    # Matrice performances (5 rôles x 24 heures)
+    perf_matrix = np.zeros((5, 24))
+    count_matrix = np.zeros((5, 24))
+    
+    for match in matches:
+        info = match.get('info', {})
+        part = next((p for p in info.get('participants', []) 
+                    if p.get('puuid') == puuid), None)
+        
+        if not part:
+            continue
+            
+        # Extraire infos
+        role = part.get('teamPosition', 'UTILITY')
+        if role not in role_map:
+            continue
+            
+        game_time = info.get('gameEndTimestamp', info.get('gameCreation', 0)) / 1000
+        hour = dt.datetime.fromtimestamp(game_time).hour
+        
+        # Score de performance simple
+        kills = part.get('kills', 0)
+        deaths = part.get('deaths', 1)
+        assists = part.get('assists', 0)
+        kda = (kills + assists) / deaths
+        win_bonus = 2 if part.get('win') else 0
+        score = min(10, kda + win_bonus)
+        
+        role_idx = role_map[role]
+        perf_matrix[role_idx][hour] += score
+        count_matrix[role_idx][hour] += 1
+    
+    # Moyennes
+    with np.errstate(divide='ignore', invalid='ignore'):
+        avg_perf = np.where(count_matrix > 0, perf_matrix / count_matrix, 0)
+    
+    # Créer la heatmap
+    fig, ax = plt.subplots(figsize=(14, 5), facecolor=BG_COLOR)
+    ax.set_facecolor(BG_COLOR)
+    
+    # Heatmap
+    im = ax.imshow(avg_perf, cmap='YlOrRd', aspect='auto', 
+                   interpolation='bilinear', vmin=0, vmax=10)
+    
+    # Axes
+    role_labels = ['Top', 'Jungle', 'Mid', 'ADC', 'Support']
+    ax.set_yticks(range(5))
+    ax.set_yticklabels(role_labels, fontsize=10, color=TEXT_COLOR)
+    
+    ax.set_xticks(range(0, 24, 2))
+    ax.set_xticklabels([f'{h:02d}h' for h in range(0, 24, 2)], 
+                       fontsize=9, color=TEXT_COLOR)
+    
+    ax.set_xlabel('Heure de la journée', fontsize=11, 
+                  color=TEXT_COLOR, fontweight='bold')
+    ax.set_ylabel('Rôle', fontsize=11, color=TEXT_COLOR, fontweight='bold')
+    
+    # Titre
+    ax.text(0.5, 1.05, 'Performances par rôle et heure', 
+            transform=ax.transAxes, fontsize=14, fontweight='bold', 
+            color=GOLD_COLOR, ha='center')
+    
+    # Colorbar
+    cbar = plt.colorbar(im, ax=ax, pad=0.02)
+    cbar.set_label('Performance', rotation=270, labelpad=20, 
+                   color=TEXT_COLOR, fontsize=10)
+    cbar.ax.tick_params(colors=TEXT_COLOR, labelsize=9)
+    
+    # Annotate values (seulement si > 0)
+    for i in range(5):
+        for j in range(24):
+            if count_matrix[i][j] > 0:
+                text_color = "white" if avg_perf[i, j] > 5 else "black"
+                ax.text(j, i, f'{avg_perf[i, j]:.1f}',
+                       ha="center", va="center", 
+                       color=text_color,
+                       fontsize=7, fontweight='bold')
+    
+    plt.tight_layout()
+    
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=120, bbox_inches='tight', 
+                facecolor=BG_COLOR)
+    plt.close(fig)
+    buf.seek(0)
+    
+    return discord.File(buf, filename='performance_heatmap.png')
 
 # =============================================================
 # ----------------- API wrapper helper calls ------------------
@@ -215,7 +487,7 @@ class ProfileCog(commands.Cog):
             wards_k    += p.get("wardsKilled",0)
 
         mastery  = await fetch_mastery(puid)
-        lp_hist  = await r_get(f"lp_hist:{puid}") or {}
+        lp_hist  = await r_get(f"lp_hist:{puid}:420") or {}  # SoloQ uniquement
         mates    = self._mates(matches, puid)
 
         embeds, page2file = self._embeds(
@@ -293,7 +565,7 @@ class ProfileCog(commands.Cog):
             if abs(streak) == 10:  # on ne va pas au-delà de 10
                 break
 
-        # n’affiche que si la série ≥ 2
+        # n'affiche que si la série ≥ 2
         if abs(streak) >= 2:
             arrow = "🔥" if streak > 0 else "💤"
             e0.description += f"\n{arrow} **{abs(streak)}** de suite (SoloQ)"
@@ -364,30 +636,69 @@ class ProfileCog(commands.Cog):
             embeds.append(e1)
 
         # ---------------------------------------------------
-        # Page 2 : Courbe LP
+        # Page 2 : Heatmap performances
         # ---------------------------------------------------
-        lp_hist_int={int(k):v for k,v in lp_hist.items()}
-        e2=discord.Embed(title="**Courbe LP – 30 jours**", colour=COLOR_GOLD)
-        if len(lp_hist_int)>=2:
-            lp_url=quickchart_lp(lp_hist_int)
-            e2.set_image(url=lp_url)
-            delta=list(lp_hist_int.values())[-1]-list(lp_hist_int.values())[0]
-            arrow="▲" if delta>=0 else "▼"
-            e2.set_footer(text=f"{arrow} {abs(delta)} LP sur 30 jours")
+        e2 = discord.Embed(title="**🔥 Performances**", colour=discord.Colour.red())
+
+        if len(matches) >= 5:
+            heatmap_file = create_performance_heatmap(matches, puid)
+            if heatmap_file:
+                e2.set_image(url="attachment://performance_heatmap.png")
+                page2file[2] = [heatmap_file]
+                e2.description = "Analyse de tes performances par rôle et tranche horaire"
         else:
-            e2.description="Aucune donnée enregistrée pour le moment 💤"
+            e2.description = "Pas assez de parties pour l'analyse (minimum 5)"
+            e2.add_field(
+                name="À venir",
+                value="Continue de jouer pour débloquer cette analyse !",
+                inline=False
+            )
+
         embeds.append(e2)
 
         # ---------------------------------------------------
-        # Page 3 : Synergie mates (statique)
+        # Page 3 : Courbe LP MODERNE
         # ---------------------------------------------------
-        e3=discord.Embed(title="**Synergie – Mates fréquents**",
+        lp_hist_int = {int(k): v for k, v in lp_hist.items()}
+        e3 = discord.Embed(title="**📈 Progression LP**", colour=COLOR_GOLD)
+
+        if len(lp_hist_int) >= 2:
+            curve_file = create_modern_lp_curve(lp_hist_int, matches, puid)
+            if curve_file:
+                e3.set_image(url="attachment://lp_curve.png")
+                page2file[3] = [curve_file]
+                
+                # Stats textuelles
+                lp_values = list(lp_hist_int.values())
+                delta = lp_values[-1] - lp_values[0]
+                peak = max(lp_values)
+                
+                arrow = "📈" if delta >= 0 else "📉"
+                e3.description = (
+                    f"{arrow} **{abs(delta)} LP** sur 30 jours\n"
+                    f"🏔️ Peak: **{peak} LP**\n"
+                    f"📊 {len(lp_hist_int)} points de données"
+                )
+        else:
+            e3.description = "Pas assez de données pour générer la courbe 💤"
+            e3.add_field(
+                name="Comment ça marche ?",
+                value="La courbe LP se construit automatiquement au fur et à mesure de tes parties ranked !",
+                inline=False
+            )
+
+        embeds.append(e3)
+
+        # ---------------------------------------------------
+        # Page 4 : Synergie mates (statique)
+        # ---------------------------------------------------
+        e4=discord.Embed(title="**Synergie – Mates fréquents**",
                          colour=discord.Colour.dark_teal())
         if mates:
-            e3.description="\n".join(f"• **{n}** – {c} games" for n,c in mates)
+            e4.description="\n".join(f"• **{n}** – {c} games" for n,c in mates)
         else:
-            e3.description="Aucun mate récurrent dans les 20 dernières parties."
-        embeds.append(e3)
+            e4.description="Aucun mate récurrent dans les 20 dernières parties."
+        embeds.append(e4)
 
         return embeds, page2file
 
