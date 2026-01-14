@@ -13,12 +13,17 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from PIL import Image
 from sqlalchemy.exc import IntegrityError
+import numpy as np
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 from oogway.database import Match, SessionLocal, User, init_db
 from oogway.riot.client import RiotClient
 from oogway.config import settings
 from oogway.cogs.profile import r_get, r_set
 import time
+import json
 
 # ─── Logging setup ───────────────────────────────────────────────────────────
 log = logging.getLogger(__name__)
@@ -77,6 +82,14 @@ ROLE_WEIGHTS: Dict[str, Dict[str, float]] = {
     "UNKNOWN": dict(KDA=.20, DMG=.25, ECO=.15, OBJ=.15, VIS=.10, UTL=.05, CLT=.10),
 }
 
+# Couleurs pour graphiques
+BG_COLOR = '#0a1428'
+GRID_COLOR = '#1e2d3d'
+GOLD_COLOR = '#c89b3c'
+WIN_COLOR = '#2ecc71'
+LOSS_COLOR = '#e74c3c'
+TEXT_COLOR = '#f0f0f0'
+
 class DDragon:
     version: Optional[str] = None
     icon_cache: Dict[str, Image.Image] = {}
@@ -101,6 +114,32 @@ def with_retry(max_attempts: int = 3, base_delay: float = 0.7):
                 await asyncio.sleep(base_delay * 2**(attempt-1))
         return wrapper
     return deco
+
+# ─── Redis Helper (FIX: handle JSON serialization) ───────────────────────────
+async def safe_r_get(key: str) -> Any:
+    """Safely get value from Redis and parse JSON if needed."""
+    value = await r_get(key)
+    if value is None:
+        return None
+    
+    # If it's already parsed (dict/list), return it
+    if isinstance(value, (dict, list)):
+        return value
+    
+    # If it's a string, try to parse as JSON
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    
+    return value
+
+async def safe_r_set(key: str, value: Any, ttl: int = None):
+    """Safely set value to Redis with JSON serialization if needed."""
+    if isinstance(value, (dict, list)):
+        value = json.dumps(value)
+    await r_set(key, value, ttl=ttl)
 
 # ─── DDragon helpers ─────────────────────────────────────────────────────────
 async def ensure_ddragon_version(session: aiohttp.ClientSession):
@@ -140,6 +179,147 @@ async def make_sprite(item_ids: List[int], session: aiohttp.ClientSession) -> Op
     sprite.save(buf, "PNG")
     buf.seek(0)
     return discord.File(buf, filename="build.png")
+
+# ─── Mini LP Graph (NOUVEAU) ─────────────────────────────────────────────────
+def create_compact_lp_graph(lp_values: list[int], current_win: bool) -> discord.File:
+    """
+    Crée une mini-courbe LP compacte pour les embeds de match.
+    Design moderne et lisible, optimisé pour Discord.
+    """
+    if not lp_values or len(lp_values) < 2:
+        return None
+    
+    # Préparer les données
+    x = np.arange(len(lp_values))
+    y = np.array(lp_values)
+    
+    # Stats
+    lp_start = lp_values[0]
+    lp_end = lp_values[-1]
+    lp_delta = lp_end - lp_start
+    lp_max = max(lp_values)
+    lp_min = min(lp_values)
+    
+    # === CRÉATION DU GRAPHIQUE COMPACT ===
+    fig, ax = plt.subplots(figsize=(8, 2.5), facecolor=BG_COLOR)
+    ax.set_facecolor(BG_COLOR)
+    
+    # Gradient de fond subtil
+    if lp_delta >= 0:
+        ax.axhspan(lp_min, lp_max, alpha=0.05, color=WIN_COLOR)
+    else:
+        ax.axhspan(lp_min, lp_max, alpha=0.05, color=LOSS_COLOR)
+    
+    # Ligne de référence au milieu
+    mid_lp = (lp_max + lp_min) / 2
+    ax.axhline(y=mid_lp, color=GRID_COLOR, linestyle='--', 
+               linewidth=1, alpha=0.3)
+    
+    # Courbe principale avec glow effect léger
+    for i in range(2):
+        alpha = 0.15 * (2 - i)
+        width = 3 + i * 1.5
+        ax.plot(x, y, color=GOLD_COLOR, linewidth=width, 
+                alpha=alpha, solid_capstyle='round')
+    
+    # Courbe principale
+    ax.plot(x, y, color=GOLD_COLOR, linewidth=2.5, 
+            marker='o', markersize=5, markeredgecolor='white', 
+            markeredgewidth=1, zorder=5)
+    
+    # Mettre en évidence le dernier point (résultat actuel)
+    last_color = WIN_COLOR if current_win else LOSS_COLOR
+    ax.scatter(x[-1], y[-1], s=120, c=last_color, 
+               marker='o', edgecolors='white', linewidths=2, 
+               zorder=10)
+    
+    # Flèche indicative du delta
+    arrow_y = lp_end + (5 if lp_delta >= 0 else -5)
+    arrow_props = dict(
+        arrowstyle='->', 
+        color=WIN_COLOR if lp_delta >= 0 else LOSS_COLOR,
+        lw=2,
+        alpha=0.7
+    )
+    
+    delta_symbol = '▲' if lp_delta >= 0 else '▼'
+    ax.annotate(f'{delta_symbol} {abs(lp_delta)} LP', 
+                xy=(x[-1], lp_end),
+                xytext=(x[-1] + 0.8, arrow_y),
+                fontsize=9, 
+                color=WIN_COLOR if lp_delta >= 0 else LOSS_COLOR,
+                fontweight='bold',
+                ha='left',
+                bbox=dict(boxstyle='round,pad=0.3', 
+                         facecolor=BG_COLOR, 
+                         edgecolor=WIN_COLOR if lp_delta >= 0 else LOSS_COLOR,
+                         alpha=0.9),
+                arrowprops=arrow_props)
+    
+    # Styling minimal des axes
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['bottom'].set_color(GRID_COLOR)
+    ax.spines['left'].set_color(GRID_COLOR)
+    ax.spines['bottom'].set_linewidth(1.5)
+    ax.spines['left'].set_linewidth(1.5)
+    
+    # Grille légère
+    ax.grid(True, alpha=0.1, color=GRID_COLOR, linestyle='-', linewidth=0.8)
+    ax.set_axisbelow(True)
+    
+    # Labels compacts
+    ax.set_xlabel('10 dernières parties', fontsize=8, 
+                  color=TEXT_COLOR, fontweight='bold', labelpad=5)
+    ax.set_ylabel('LP', fontsize=8, color=TEXT_COLOR, 
+                  fontweight='bold', labelpad=5)
+    
+    # Ticks minimaux
+    ax.set_xticks([0, len(lp_values)-1])
+    ax.set_xticklabels(['', 'Maintenant'], fontsize=7, color=TEXT_COLOR)
+    ax.tick_params(colors=TEXT_COLOR, labelsize=7, length=3)
+    
+    # Limites avec un peu d'espace
+    lp_range = lp_max - lp_min or 10
+    ax.set_ylim(lp_min - lp_range * 0.15, lp_max + lp_range * 0.15)
+    ax.set_xlim(-0.3, len(lp_values) - 0.7)
+    
+    plt.tight_layout()
+    
+    # Sauvegarder
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=120, bbox_inches='tight', 
+                facecolor=BG_COLOR, edgecolor='none')
+    plt.close(fig)
+    buf.seek(0)
+    
+    return discord.File(buf, filename='lp_trend.png')
+
+def create_sparkline_lp(lp_values: list[int]) -> str:
+    """
+    Crée une sparkline ASCII pour footer (fallback si pas d'image).
+    """
+    if not lp_values or len(lp_values) < 2:
+        return "─" * 10
+    
+    min_lp = min(lp_values)
+    max_lp = max(lp_values)
+    range_lp = max_lp - min_lp
+    
+    if range_lp == 0:
+        return "─" * len(lp_values)
+    
+    chars = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
+    
+    sparkline = ""
+    for lp in lp_values:
+        normalized = int((lp - min_lp) / range_lp * 7)
+        sparkline += chars[normalized]
+    
+    delta = lp_values[-1] - lp_values[0]
+    arrow = '▲' if delta >= 0 else '▼'
+    
+    return f"{sparkline} {arrow}{abs(delta)}LP"
 
 # ─── Stats & badges ──────────────────────────────────────────────────────────
 def clamp01(x: float) -> float:
@@ -291,37 +471,6 @@ def lp_delta_between(prev: Tuple[str, str, int], cur: Tuple[str, str, int]) -> i
         else:
             return -(prev_lp + (100 - cur_lp))
 
-# ─── LP Trend Graph ──────────────────────────────────────────────────────────
-def make_lp_graph(lp_history: List[int]) -> str:
-    """Create a 3-line ASCII graph of LP progression."""
-    if len(lp_history) < 2:
-        return "─" * 10
-
-    # Normalize to 0-2 range (3 lines)
-    min_lp = min(lp_history)
-    max_lp = max(lp_history)
-    range_lp = max_lp - min_lp or 1
-
-    # Create 3 lines
-    lines = ["", "", ""]
-    for i, lp in enumerate(lp_history):
-        normalized = int((lp - min_lp) / range_lp * 2)
-
-        if normalized == 2:
-            lines[0] += "╭" if i > 0 and int((lp_history[i-1] - min_lp) / range_lp * 2) < 2 else "─"
-            lines[1] += "│" if i > 0 and int((lp_history[i-1] - min_lp) / range_lp * 2) < 2 else " "
-            lines[2] += " "
-        elif normalized == 1:
-            lines[0] += "╰" if i > 0 and int((lp_history[i-1] - min_lp) / range_lp * 2) == 2 else " "
-            lines[1] += "─"
-            lines[2] += "╭" if i > 0 and int((lp_history[i-1] - min_lp) / range_lp * 2) == 0 else " "
-        else:  # normalized == 0
-            lines[0] += " "
-            lines[1] += "│" if i > 0 and int((lp_history[i-1] - min_lp) / range_lp * 2) > 0 else " "
-            lines[2] += "─"
-
-    return "\n".join(lines)
-
 # ─── Promotion/Demotion Detection ────────────────────────────────────────────
 def detect_rank_change(prev: Tuple[str, str, int], cur: Tuple[str, str, int]) -> Optional[str]:
     """Detect if player was promoted or demoted."""
@@ -365,35 +514,37 @@ class MatchAlertsCog(commands.Cog):
         # limiter global pour match/timeline (évite burst)
         self.sem = asyncio.Semaphore(2)
 
-    # ─── Persistance (Redis) ──────────────────────────────────────────
+    # ─── Persistance (Redis) - FIXED ──────────────────────────────────────
     async def _get_last_state(self, puuid: str, queue_id: int) -> Optional[Tuple[str, str, int]]:
         key = f"lp_last_state:{puuid}:{queue_id}"
-        raw = await r_get(key)
+        raw = await safe_r_get(key)
         if isinstance(raw, dict) and "tier" in raw and "div" in raw and "lp" in raw:
             try:
                 return str(raw["tier"]), str(raw["div"]), int(raw["lp"])
-            except Exception:
+            except (ValueError, TypeError) as e:
+                log.warning(f"Invalid last_state format for {key}: {e}")
                 return None
         return None
 
     async def _set_last_state(self, puuid: str, queue_id: int, state: Tuple[str, str, int]):
         key = f"lp_last_state:{puuid}:{queue_id}"
         payload = {"tier": state[0], "div": state[1], "lp": int(state[2])}
-        await r_set(key, payload, ttl=90*24*3600)
+        await safe_r_set(key, payload, ttl=90*24*3600)
 
     async def _get_last_seen_match(self, puuid: str) -> Optional[str]:
-        return await r_get(f"last_seen_match:{puuid}") or None
+        value = await safe_r_get(f"last_seen_match:{puuid}")
+        return str(value) if value else None
 
     async def _set_last_seen_match(self, puuid: str, mid: str):
-        await r_set(f"last_seen_match:{puuid}", mid, ttl=90*24*3600)
+        await safe_r_set(f"last_seen_match:{puuid}", mid, ttl=90*24*3600)
 
-    # ─── Streak Management ────────────────────────────────────────────────
+    # ─── Streak Management - FIXED ────────────────────────────────────────
     async def _update_streak(self, puuid: str, queue_id: int, win: bool) -> Tuple[int, bool]:
         """Update match streak and return (streak_count, is_win_streak)."""
         key = f"streak:{puuid}:{queue_id}"
-        raw = await r_get(key) or []
+        raw = await safe_r_get(key)
 
-        # Convert to list of "W" or "L"
+        # Handle both list and None cases
         if isinstance(raw, list):
             streak_list = raw
         else:
@@ -406,7 +557,7 @@ class MatchAlertsCog(commands.Cog):
         streak_list = streak_list[-10:]
 
         # Save back
-        await r_set(key, streak_list, ttl=90*24*3600)
+        await safe_r_set(key, streak_list, ttl=90*24*3600)
 
         # Calculate current streak from end
         if not streak_list:
@@ -423,22 +574,26 @@ class MatchAlertsCog(commands.Cog):
 
         return streak_count, current_result == "W"
 
-    # ─── Personal Records ──────────────────────────────────────────────────
+    # ─── Personal Records - FIXED ──────────────────────────────────────────
     async def _check_personal_records(
         self, puuid: str, champion: str, kda: float, cs: int, vision: int
     ) -> List[str]:
         """Check if player beat any personal records and return list of achievements."""
         key = f"records:{puuid}:{champion}"
-        raw = await r_get(key) or {}
+        raw = await safe_r_get(key)
 
         try:
-            records = {
-                "kda": float(raw.get("kda", 0)),
-                "cs": int(raw.get("cs", 0)),
-                "vision": int(raw.get("vision", 0))
-            }
-        except (AttributeError, ValueError, KeyError):
-            records = {"kda": 0, "cs": 0, "vision": 0}
+            if isinstance(raw, dict):
+                records = {
+                    "kda": float(raw.get("kda", 0)),
+                    "cs": int(raw.get("cs", 0)),
+                    "vision": int(raw.get("vision", 0))
+                }
+            else:
+                records = {"kda": 0.0, "cs": 0, "vision": 0}
+        except (AttributeError, ValueError, KeyError, TypeError) as e:
+            log.warning(f"Invalid records format for {key}: {e}")
+            records = {"kda": 0.0, "cs": 0, "vision": 0}
 
         achievements = []
         updated = False
@@ -446,24 +601,24 @@ class MatchAlertsCog(commands.Cog):
         # Check KDA record
         if kda > records["kda"]:
             achievements.append(f"🎖️ Nouveau record KDA sur {champion}: {kda:.2f}")
-            records["kda"] = kda
+            records["kda"] = float(kda)
             updated = True
 
         # Check CS record
         if cs > records["cs"]:
             achievements.append(f"🌾 Record de CS sur {champion}: {cs}")
-            records["cs"] = cs
+            records["cs"] = int(cs)
             updated = True
 
         # Check vision record
         if vision > records["vision"]:
             achievements.append(f"👁️ Record de vision sur {champion}: {vision}")
-            records["vision"] = vision
+            records["vision"] = int(vision)
             updated = True
 
         # Save updated records
         if updated:
-            await r_set(key, records, ttl=365*24*3600)
+            await safe_r_set(key, records, ttl=365*24*3600)
 
         return achievements
 
@@ -492,7 +647,7 @@ class MatchAlertsCog(commands.Cog):
             try:
                 await self.handle_user(u)
             except Exception as e:
-                log.error(f"Error for user {u.discord_id}: {e}")
+                log.error(f"Error for user {u.discord_id}: {e}", exc_info=True)
                 self.db.rollback()
             await asyncio.sleep(PER_USER_SLEEP)
 
@@ -544,7 +699,7 @@ class MatchAlertsCog(commands.Cog):
             ids = latest_ids  # fallback
 
         # On arrête à l'ancien last_seen s'il apparaît
-        if last_seen in ids:
+        if last_seen and last_seen in ids:
             cutoff_index = ids.index(last_seen)
             to_process = ids[:cutoff_index]  # plus récents uniquement
         else:
@@ -556,15 +711,29 @@ class MatchAlertsCog(commands.Cog):
             exists = self.db.query(Match).filter_by(match_id=mid, puuid=user.puuid).first()
             if exists:
                 continue
-            await self.process_match(user, mid)
-            # MAJ last_seen après chaque succès (évite retraiter si crash en plein lot)
-            await self._set_last_seen_match(user.puuid, mid)
+            
+            try:
+                await self.process_match(user, mid)
+                # MAJ last_seen après chaque succès (évite retraiter si crash en plein lot)
+                await self._set_last_seen_match(user.puuid, mid)
+            except Exception as e:
+                log.error(f"Failed to process match {mid} for {user.discord_id}: {e}", exc_info=True)
+                # Continue processing other matches even if one fails
 
     async def process_match(self, user: User, mid: str):
         async with self.sem:  # évite burst match+timeline
-            info = (await self._get_match(user, mid))["info"]
-
-        part = next(p for p in info["participants"] if p["puuid"] == user.puuid)
+            match_data = await self._get_match(user, mid)
+            
+        info = match_data.get("info")
+        if not info:
+            log.warning(f"No info in match data for {mid}")
+            return
+            
+        part = next((p for p in info["participants"] if p["puuid"] == user.puuid), None)
+        if not part:
+            log.warning(f"User {user.puuid} not found in match {mid}")
+            return
+            
         if info["queueId"] not in RANKED_QUEUES:
             # Même si non-ranked, on a déjà mis à jour last_seen dans handle_user
             return
@@ -596,18 +765,24 @@ class MatchAlertsCog(commands.Cog):
         # ── Feature 2: Rank Change Detection ──────────────────────────────────
         rank_change = detect_rank_change(prev_state, cur_state)
 
-        # Historique LP par file 30j
+        # Historique LP par file 30j - FIXED
         now = int(time.time())
         hist_key = f"lp_hist:{user.puuid}:{queue_id}"
-        raw = await r_get(hist_key) or {}
+        raw = await safe_r_get(hist_key)
+        
         try:
-            hist: Dict[int, int] = {int(k): int(v) for k, v in raw.items()}
-        except AttributeError:
+            if isinstance(raw, dict):
+                hist: Dict[int, int] = {int(k): int(v) for k, v in raw.items()}
+            else:
+                hist = {}
+        except (AttributeError, ValueError, TypeError) as e:
+            log.warning(f"Invalid LP history format for {hist_key}: {e}")
             hist = {}
+            
         hist[now] = int(lp_now)
         thirty_days = 30 * 24 * 3600
         hist = {t: v for t, v in hist.items() if (now - t) <= thirty_days}
-        await r_set(hist_key, {str(t): v for t, v in hist.items()}, ttl=thirty_days)
+        await safe_r_set(hist_key, {str(t): v for t, v in hist.items()}, ttl=thirty_days)
 
         # Opposant lane, diffs
         opponent = find_opponent(part, info["participants"])
@@ -616,7 +791,8 @@ class MatchAlertsCog(commands.Cog):
 
         # Timeline (protégé par le sem)
         async with self.sem:
-            timeline = parse_timeline((await self._get_timeline(user, mid)).get("info", {}))
+            timeline_data = await self._get_timeline(user, mid)
+        timeline = parse_timeline(timeline_data)
         badges   = compute_badges(part, info, opponent, timeline)
 
         # ── Détection DuoQ : même team, autre joueur link dans DB (queue 420)
@@ -816,19 +992,37 @@ class MatchAlertsCog(commands.Cog):
             records_text = "\n".join(personal_records)
             embed.add_field(name="Records Personnels", value=records_text, inline=False)
 
-        # ── Feature 4: LP Trend Graph ─────────────────────────────────────────
+        # ── Feature 4: LP Trend Graph (NOUVEAU) ───────────────────────────────
+        files_to_send = []
+        
+        # Build sprite d'abord
+        sprite = await make_sprite([part.get(f"item{i}",0) for i in range(7)], self.http)
+        if sprite:
+            files_to_send.append(sprite)
+            embed.set_image(url="attachment://build.png")
+        
+        # Ajouter le graphique LP si disponible
         if lp_values and len(lp_values) >= 2:
-            lp_graph = make_lp_graph(lp_values)
-            embed.set_footer(text=f"Tendance LP (10 dernières parties)\n{lp_graph}")
+            lp_graph_file = create_compact_lp_graph(lp_values, part['win'])
+            if lp_graph_file:
+                files_to_send.append(lp_graph_file)
+                # Si on a déjà le sprite en image principale, mettre le graph en thumbnail
+                if sprite:
+                    embed.set_thumbnail(url="attachment://lp_trend.png")
+                else:
+                    # Sinon, utiliser le graph comme image principale
+                    embed.set_image(url="attachment://lp_trend.png")
+                
+                # Footer avec sparkline en plus (optionnel)
+                sparkline = create_sparkline_lp(lp_values)
+                embed.set_footer(text=f"Partie #{total_games} | {sparkline}")
+            else:
+                embed.set_footer(text=f"Partie #{total_games}")
         else:
             embed.set_footer(text=f"Partie #{total_games}")
 
-        sprite = await make_sprite([part.get(f"item{i}",0) for i in range(7)], self.http)
-        if sprite:
-            embed.set_image(url="attachment://build.png")
-
         view = HelpView(badges, part.get("teamPosition","UNKNOWN"), oog, breakdown)
-        await channel.send(embed=embed, file=sprite, view=view, delete_after=172800)
+        await channel.send(embed=embed, files=files_to_send, view=view, delete_after=172800)
 
     @app_commands.command(name="alerts_test", description="Force un poll immédiat")
     async def alerts_test(self, interaction: discord.Interaction):
