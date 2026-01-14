@@ -167,23 +167,29 @@ class LeaderboardCog(commands.Cog):
 
     @staticmethod
     def get_wr_label(wr: int) -> str:
-        """Retourne un label épuré basé sur le winrate."""
-        if wr < 45:
-            return "En difficulté"
+        """Retourne un label humoristique basé sur le winrate."""
+        if wr < 40:
+            return "IA ChatGPT"
+        elif wr <= 42:
+            return "Boosted"
+        elif wr <= 45:
+            return "Dans le sac à dos"
         elif wr <= 48:
-            return "En rodage"
+            return "Presque en positif"
         elif wr <= 51:
-            return "Équilibré"
+            return "All inclusive"
         elif wr <= 54:
-            return "Solide"
+            return "Mouais"
         elif wr <= 57:
-            return "Performant"
+            return "Propre"
         elif wr <= 60:
-            return "Excellent"
+            return "Shifu"
+        elif wr <= 63:
+            return "1v9"
         elif wr <= 65:
-            return "Elite"
+            return "Po"
         else:
-            return "Exceptionnel"
+            return "Oogway 🐢"
 
     @commands.Cog.listener()
     async def on_ready(self):
