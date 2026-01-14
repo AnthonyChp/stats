@@ -603,7 +603,7 @@ class LeaderboardCog(commands.Cog):
             }
         
         # Plus haut rank
-        highest = entries[0]  # Déjà trié
+        highest = entries[0]  # Déjà trié par rank
         try:
             du = await self.bot.fetch_user(highest[0].discord_id)
             highest_name = du.display_name
@@ -611,10 +611,13 @@ class LeaderboardCog(commands.Cog):
             highest_name = highest[0].puuid[:6]
         highest_rank = f"{highest_name} ({highest[1]} {highest[2]})"
         
-        # Meilleur WR (minimum 10 games)
+        # Meilleur WR (minimum 10 games) - FIX: chercher vraiment le max WR
         qualified = [e for e in entries if (e[5] + e[6]) >= 10]
         if qualified:
-            best_wr_entry = max(qualified, key=lambda e: e[4])
+            # Trouver le WR maximum
+            best_wr_value = max(e[4] for e in qualified)
+            # Récupérer l'entrée correspondante (la première si égalité)
+            best_wr_entry = next(e for e in qualified if e[4] == best_wr_value)
             try:
                 du = await self.bot.fetch_user(best_wr_entry[0].discord_id)
                 best_wr_name = du.display_name
@@ -625,14 +628,15 @@ class LeaderboardCog(commands.Cog):
             best_wr = None
         
         # Plus de games
-        most_games_entry = max(entries, key=lambda e: e[5] + e[6])
+        total_games_values = [e[5] + e[6] for e in entries]
+        max_games = max(total_games_values)
+        most_games_entry = next(e for e in entries if (e[5] + e[6]) == max_games)
         try:
             du = await self.bot.fetch_user(most_games_entry[0].discord_id)
             most_games_name = du.display_name
         except:
             most_games_name = most_games_entry[0].puuid[:6]
-        total_games = most_games_entry[5] + most_games_entry[6]
-        most_games = f"{most_games_name} ({total_games} games)"
+        most_games = f"{most_games_name} ({max_games} games)"
         
         return {
             "highest_rank": highest_rank,
