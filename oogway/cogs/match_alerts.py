@@ -6,6 +6,8 @@ import io
 import logging
 import math
 from typing import Any, Dict, List, Optional, Tuple
+from functools import lru_cache
+from dataclasses import dataclass
 
 import aiohttp
 import discord
@@ -48,13 +50,13 @@ D_DRAGON_VERSIONS_URL = "https://ddragon.leagueoflegends.com/api/versions.json"
 SPRITE_SIZE = 32
 LP_BAR_LEN = 10
 
-# Throttle (doucement entre users pour éviter 429)
-PER_USER_SLEEP = 0.15  # secondes
+# Throttle
+PER_USER_SLEEP = 0.15
 
 EM_GOLD, EM_KDA, EM_VISION, EM_CS = "🟡", "⚔️", "👁️", "🌾"
 ROLE_EMOJI = {
     "TOP": "<:top:1384144618404315197>",
-    "JUNGLE": "<:jungle:1384144488988938323>",
+    "JUNGLE": "<:jungle:1384144488938323>",
     "MIDDLE": "<:mid:1384144551467417671>",
     "BOTTOM": "<:bot:1384144643150577807>",
     "UTILITY": "<:sup:1384144577832685668>",
@@ -90,215 +92,274 @@ WIN_COLOR = '#2ecc71'
 LOSS_COLOR = '#e74c3c'
 TEXT_COLOR = '#f0f0f0'
 
-class DDragon:
-    version: Optional[str] = None
-    icon_cache: Dict[str, Image.Image] = {}
+# Mythic items set (immutable for faster lookup)
+MYTHIC_ITEMS = frozenset({
+    3031, 6671, 6672, 6673, 6675, 6691, 6692, 6693, 6694, 6695,
+    3078, 3084, 3124, 3137, 3156, 3190, 3504, 4005, 4401, 4628
+})
 
-# ─── Retry decorator ─────────────────────────────────────────────────────────
+# ─── Optimized Dataclasses ───────────────────────────────────────────────────
+@dataclass
+class DDragon:
+    """Singleton for Data Dragon caching."""
+    version: Optional[str] = None
+    icon_cache: Dict[str, Image.Image] = None
+    _cache_timestamp: float = 0.0
+    CACHE_TTL: int = 86400  # 24h
+    
+    def __post_init__(self):
+        if self.icon_cache is None:
+            self.icon_cache = {}
+    
+    def should_refresh(self) -> bool:
+        """Check if version cache should be refreshed."""
+        return (time.time() - self._cache_timestamp) > self.CACHE_TTL
+
+# Global instance
+ddragon = DDragon()
+
+# ─── Retry decorator (optimisé) ──────────────────────────────────────────────
 def with_retry(max_attempts: int = 3, base_delay: float = 0.7):
+    """Optimized retry decorator with exponential backoff."""
     def deco(func):
         async def wrapper(*args, **kwargs):
-            for attempt in range(1, max_attempts+1):
+            last_exception = None
+            for attempt in range(1, max_attempts + 1):
                 try:
                     return await func(*args, **kwargs)
                 except aiohttp.ClientResponseError as e:
-                    # 429 et 5xx => retry
+                    last_exception = e
                     if e.status not in (429,) and e.status < 500:
                         raise
-                    log.warning(f"[retry {attempt}/{max_attempts}] {func.__name__}: {e}")
+                    if attempt < max_attempts:
+                        delay = base_delay * (2 ** (attempt - 1))
+                        log.warning(f"[retry {attempt}/{max_attempts}] {func.__name__}: {e}, retry in {delay:.1f}s")
+                        await asyncio.sleep(delay)
                 except aiohttp.ClientError as e:
-                    log.warning(f"[retry {attempt}/{max_attempts}] network {func.__name__}: {e}")
-                if attempt == max_attempts:
-                    log.error(f"{func.__name__} failed after {max_attempts} attempts")
-                    raise
-                await asyncio.sleep(base_delay * 2**(attempt-1))
+                    last_exception = e
+                    if attempt < max_attempts:
+                        delay = base_delay * (2 ** (attempt - 1))
+                        log.warning(f"[retry {attempt}/{max_attempts}] network {func.__name__}: {e}")
+                        await asyncio.sleep(delay)
+            
+            log.error(f"{func.__name__} failed after {max_attempts} attempts")
+            raise last_exception
         return wrapper
     return deco
 
-# ─── Redis Helper (FIX: handle JSON serialization) ───────────────────────────
+# ─── Redis Helper (OPTIMISÉ) ─────────────────────────────────────────────────
 async def safe_r_get(key: str) -> Any:
     """Safely get value from Redis and parse JSON if needed."""
-    value = await r_get(key)
-    if value is None:
-        return None
-    
-    # If it's already parsed (dict/list), return it
-    if isinstance(value, (dict, list)):
-        return value
-    
-    # If it's a string, try to parse as JSON
-    if isinstance(value, str):
-        try:
-            return json.loads(value)
-        except json.JSONDecodeError:
+    try:
+        value = await r_get(key)
+        if value is None:
+            return None
+        
+        # If it's already parsed, return it
+        if isinstance(value, (dict, list)):
             return value
-    
-    return value
+        
+        # Try to parse as JSON
+        if isinstance(value, (str, bytes)):
+            try:
+                return json.loads(value)
+            except json.JSONDecodeError:
+                return value
+        
+        return value
+    except Exception as e:
+        log.warning(f"Redis get error for {key}: {e}")
+        return None
 
 async def safe_r_set(key: str, value: Any, ttl: int = None):
     """Safely set value to Redis with JSON serialization if needed."""
-    if isinstance(value, (dict, list)):
-        value = json.dumps(value)
-    await r_set(key, value, ttl=ttl)
+    try:
+        if isinstance(value, (dict, list)):
+            value = json.dumps(value)
+        await r_set(key, value, ttl=ttl)
+    except Exception as e:
+        log.error(f"Redis set error for {key}: {e}")
 
-# ─── DDragon helpers ─────────────────────────────────────────────────────────
-async def ensure_ddragon_version(session: aiohttp.ClientSession):
-    if DDragon.version is None:
-        resp = await session.get(D_DRAGON_VERSIONS_URL)
-        resp.raise_for_status()
-        versions = await resp.json()
-        DDragon.version = versions[0]
-        log.info(f"DDragon version {DDragon.version} loaded")
+# ─── DDragon helpers (OPTIMISÉ) ──────────────────────────────────────────────
+async def ensure_ddragon_version(session: aiohttp.ClientSession, force_refresh: bool = False):
+    """Ensure Data Dragon version is loaded with caching."""
+    if ddragon.version is None or force_refresh or ddragon.should_refresh():
+        try:
+            resp = await session.get(D_DRAGON_VERSIONS_URL, timeout=aiohttp.ClientTimeout(total=5))
+            resp.raise_for_status()
+            versions = await resp.json()
+            ddragon.version = versions[0]
+            ddragon._cache_timestamp = time.time()
+            log.info(f"DDragon version {ddragon.version} loaded")
+        except Exception as e:
+            log.error(f"Failed to fetch DDragon version: {e}")
+            if ddragon.version is None:
+                ddragon.version = "14.1.1"  # Fallback version
 
 async def fetch_icon(url: str, session: aiohttp.ClientSession) -> Image.Image:
-    if url in DDragon.icon_cache:
-        return DDragon.icon_cache[url]
-    resp = await session.get(url)
-    resp.raise_for_status()
-    img = Image.open(io.BytesIO(await resp.read())).convert("RGBA")
-    DDragon.icon_cache[url] = img
-    return img
+    """Fetch and cache champion/item icons."""
+    if url in ddragon.icon_cache:
+        return ddragon.icon_cache[url]
+    
+    try:
+        resp = await session.get(url, timeout=aiohttp.ClientTimeout(total=3))
+        resp.raise_for_status()
+        img = Image.open(io.BytesIO(await resp.read())).convert("RGBA")
+        
+        # Limit cache size
+        if len(ddragon.icon_cache) > 500:
+            # Remove oldest 100 entries (FIFO)
+            keys_to_remove = list(ddragon.icon_cache.keys())[:100]
+            for key in keys_to_remove:
+                ddragon.icon_cache.pop(key, None)
+        
+        ddragon.icon_cache[url] = img
+        return img
+    except Exception as e:
+        log.warning(f"Failed to fetch icon {url}: {e}")
+        # Return a transparent placeholder
+        return Image.new("RGBA", (SPRITE_SIZE, SPRITE_SIZE), (0, 0, 0, 0))
 
 async def make_sprite(item_ids: List[int], session: aiohttp.ClientSession) -> Optional[discord.File]:
-    icons: List[Image.Image] = []
-    for iid in item_ids:
-        if not iid:
-            continue
-        url = f"https://ddragon.leagueoflegends.com/cdn/{DDragon.version}/img/item/{iid}.png"
-        try:
-            img = await fetch_icon(url, session)
-            icons.append(img.resize((SPRITE_SIZE, SPRITE_SIZE)))
-        except Exception as e:
-            log.warning(f"Item icon {iid} failed: {e}")
-    if not icons:
+    """Create sprite from item IDs with parallel fetching."""
+    if not item_ids or all(not iid for iid in item_ids):
         return None
-    sprite = Image.new("RGBA", (SPRITE_SIZE * len(icons), SPRITE_SIZE))
-    for idx, ic in enumerate(icons):
-        sprite.paste(ic, (idx*SPRITE_SIZE, 0), ic)
+    
+    # Filter valid items
+    valid_ids = [iid for iid in item_ids if iid]
+    if not valid_ids:
+        return None
+    
+    # Fetch all icons concurrently
+    tasks = []
+    for iid in valid_ids:
+        url = f"https://ddragon.leagueoflegends.com/cdn/{ddragon.version}/img/item/{iid}.png"
+        tasks.append(fetch_icon(url, session))
+    
+    icons = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Filter successful fetches and resize
+    valid_icons = []
+    for icon in icons:
+        if isinstance(icon, Image.Image):
+            valid_icons.append(icon.resize((SPRITE_SIZE, SPRITE_SIZE), Image.LANCZOS))
+    
+    if not valid_icons:
+        return None
+    
+    # Create sprite
+    sprite = Image.new("RGBA", (SPRITE_SIZE * len(valid_icons), SPRITE_SIZE))
+    for idx, ic in enumerate(valid_icons):
+        sprite.paste(ic, (idx * SPRITE_SIZE, 0), ic)
+    
     buf = io.BytesIO()
-    sprite.save(buf, "PNG")
+    sprite.save(buf, "PNG", optimize=True)
     buf.seek(0)
     return discord.File(buf, filename="build.png")
 
-# ─── Mini LP Graph (NOUVEAU) ─────────────────────────────────────────────────
-def create_compact_lp_graph(lp_values: list[int], current_win: bool) -> discord.File:
-    """
-    Crée une mini-courbe LP compacte pour les embeds de match.
-    Design moderne et lisible, optimisé pour Discord.
-    """
+# ─── Mini LP Graph (OPTIMISÉ) ────────────────────────────────────────────────
+def create_compact_lp_graph(lp_values: list[int], current_win: bool) -> Optional[discord.File]:
+    """Create compact LP curve for match embeds with optimizations."""
     if not lp_values or len(lp_values) < 2:
         return None
     
-    # Préparer les données
-    x = np.arange(len(lp_values))
-    y = np.array(lp_values)
-    
-    # Stats
-    lp_start = lp_values[0]
-    lp_end = lp_values[-1]
-    lp_delta = lp_end - lp_start
-    lp_max = max(lp_values)
-    lp_min = min(lp_values)
-    
-    # === CRÉATION DU GRAPHIQUE COMPACT ===
-    fig, ax = plt.subplots(figsize=(8, 2.5), facecolor=BG_COLOR)
-    ax.set_facecolor(BG_COLOR)
-    
-    # Gradient de fond subtil
-    if lp_delta >= 0:
-        ax.axhspan(lp_min, lp_max, alpha=0.05, color=WIN_COLOR)
-    else:
-        ax.axhspan(lp_min, lp_max, alpha=0.05, color=LOSS_COLOR)
-    
-    # Ligne de référence au milieu
-    mid_lp = (lp_max + lp_min) / 2
-    ax.axhline(y=mid_lp, color=GRID_COLOR, linestyle='--', 
-               linewidth=1, alpha=0.3)
-    
-    # Courbe principale avec glow effect léger
-    for i in range(2):
-        alpha = 0.15 * (2 - i)
-        width = 3 + i * 1.5
-        ax.plot(x, y, color=GOLD_COLOR, linewidth=width, 
-                alpha=alpha, solid_capstyle='round')
-    
-    # Courbe principale
-    ax.plot(x, y, color=GOLD_COLOR, linewidth=2.5, 
-            marker='o', markersize=5, markeredgecolor='white', 
-            markeredgewidth=1, zorder=5)
-    
-    # Mettre en évidence le dernier point (résultat actuel)
-    last_color = WIN_COLOR if current_win else LOSS_COLOR
-    ax.scatter(x[-1], y[-1], s=120, c=last_color, 
-               marker='o', edgecolors='white', linewidths=2, 
-               zorder=10)
-    
-    # Flèche indicative du delta
-    arrow_y = lp_end + (5 if lp_delta >= 0 else -5)
-    arrow_props = dict(
-        arrowstyle='->', 
-        color=WIN_COLOR if lp_delta >= 0 else LOSS_COLOR,
-        lw=2,
-        alpha=0.7
-    )
-    
-    delta_symbol = '▲' if lp_delta >= 0 else '▼'
-    ax.annotate(f'{delta_symbol} {abs(lp_delta)} LP', 
+    try:
+        x = np.arange(len(lp_values))
+        y = np.array(lp_values, dtype=np.int32)
+        
+        lp_start = lp_values[0]
+        lp_end = lp_values[-1]
+        lp_delta = lp_end - lp_start
+        lp_max = int(np.max(y))
+        lp_min = int(np.min(y))
+        
+        # === OPTIMIZED GRAPH CREATION ===
+        fig, ax = plt.subplots(figsize=(8, 2.5), facecolor=BG_COLOR, dpi=100)
+        ax.set_facecolor(BG_COLOR)
+        
+        # Gradient background
+        color = WIN_COLOR if lp_delta >= 0 else LOSS_COLOR
+        ax.axhspan(lp_min, lp_max, alpha=0.05, color=color)
+        
+        # Reference line
+        mid_lp = (lp_max + lp_min) / 2
+        ax.axhline(y=mid_lp, color=GRID_COLOR, linestyle='--', linewidth=1, alpha=0.3)
+        
+        # Main curve with glow
+        for i in range(2):
+            alpha = 0.15 * (2 - i)
+            width = 3 + i * 1.5
+            ax.plot(x, y, color=GOLD_COLOR, linewidth=width, alpha=alpha, solid_capstyle='round')
+        
+        # Main line
+        ax.plot(x, y, color=GOLD_COLOR, linewidth=2.5, marker='o', markersize=5,
+                markeredgecolor='white', markeredgewidth=1, zorder=5)
+        
+        # Highlight last point
+        last_color = WIN_COLOR if current_win else LOSS_COLOR
+        ax.scatter(x[-1], y[-1], s=120, c=last_color, marker='o',
+                   edgecolors='white', linewidths=2, zorder=10)
+        
+        # Delta annotation
+        if lp_delta != 0:
+            arrow_y = lp_end + (5 if lp_delta >= 0 else -5)
+            delta_symbol = '▲' if lp_delta >= 0 else '▼'
+            delta_color = WIN_COLOR if lp_delta >= 0 else LOSS_COLOR
+            
+            ax.annotate(
+                f'{delta_symbol} {abs(lp_delta)} LP',
                 xy=(x[-1], lp_end),
                 xytext=(x[-1] + 0.8, arrow_y),
-                fontsize=9, 
-                color=WIN_COLOR if lp_delta >= 0 else LOSS_COLOR,
+                fontsize=9,
+                color=delta_color,
                 fontweight='bold',
                 ha='left',
-                bbox=dict(boxstyle='round,pad=0.3', 
-                         facecolor=BG_COLOR, 
-                         edgecolor=WIN_COLOR if lp_delta >= 0 else LOSS_COLOR,
-                         alpha=0.9),
-                arrowprops=arrow_props)
-    
-    # Styling minimal des axes
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
-    ax.spines['bottom'].set_color(GRID_COLOR)
-    ax.spines['left'].set_color(GRID_COLOR)
-    ax.spines['bottom'].set_linewidth(1.5)
-    ax.spines['left'].set_linewidth(1.5)
-    
-    # Grille légère
-    ax.grid(True, alpha=0.1, color=GRID_COLOR, linestyle='-', linewidth=0.8)
-    ax.set_axisbelow(True)
-    
-    # Labels compacts
-    ax.set_xlabel('10 dernières parties', fontsize=8, 
-                  color=TEXT_COLOR, fontweight='bold', labelpad=5)
-    ax.set_ylabel('LP', fontsize=8, color=TEXT_COLOR, 
-                  fontweight='bold', labelpad=5)
-    
-    # Ticks minimaux
-    ax.set_xticks([0, len(lp_values)-1])
-    ax.set_xticklabels(['', 'Maintenant'], fontsize=7, color=TEXT_COLOR)
-    ax.tick_params(colors=TEXT_COLOR, labelsize=7, length=3)
-    
-    # Limites avec un peu d'espace
-    lp_range = lp_max - lp_min or 10
-    ax.set_ylim(lp_min - lp_range * 0.15, lp_max + lp_range * 0.15)
-    ax.set_xlim(-0.3, len(lp_values) - 0.7)
-    
-    plt.tight_layout()
-    
-    # Sauvegarder
-    buf = io.BytesIO()
-    fig.savefig(buf, format='png', dpi=120, bbox_inches='tight', 
-                facecolor=BG_COLOR, edgecolor='none')
-    plt.close(fig)
-    buf.seek(0)
-    
-    return discord.File(buf, filename='lp_trend.png')
+                bbox=dict(boxstyle='round,pad=0.3', facecolor=BG_COLOR,
+                         edgecolor=delta_color, alpha=0.9),
+                arrowprops=dict(arrowstyle='->', color=delta_color, lw=2, alpha=0.7)
+            )
+        
+        # Minimal axis styling
+        for spine in ['top', 'right']:
+            ax.spines[spine].set_visible(False)
+        for spine in ['bottom', 'left']:
+            ax.spines[spine].set_color(GRID_COLOR)
+            ax.spines[spine].set_linewidth(1.5)
+        
+        ax.grid(True, alpha=0.1, color=GRID_COLOR, linestyle='-', linewidth=0.8)
+        ax.set_axisbelow(True)
+        
+        # Labels
+        ax.set_xlabel('10 dernières parties', fontsize=8, color=TEXT_COLOR,
+                      fontweight='bold', labelpad=5)
+        ax.set_ylabel('LP', fontsize=8, color=TEXT_COLOR, fontweight='bold', labelpad=5)
+        
+        # Ticks
+        ax.set_xticks([0, len(lp_values) - 1])
+        ax.set_xticklabels(['', 'Maintenant'], fontsize=7, color=TEXT_COLOR)
+        ax.tick_params(colors=TEXT_COLOR, labelsize=7, length=3)
+        
+        # Limits
+        lp_range = lp_max - lp_min or 10
+        ax.set_ylim(lp_min - lp_range * 0.15, lp_max + lp_range * 0.15)
+        ax.set_xlim(-0.3, len(lp_values) - 0.7)
+        
+        plt.tight_layout()
+        
+        # Save optimized
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', dpi=100, bbox_inches='tight',
+                    facecolor=BG_COLOR, edgecolor='none', optimize=True)
+        plt.close(fig)
+        buf.seek(0)
+        
+        return discord.File(buf, filename='lp_trend.png')
+    except Exception as e:
+        log.error(f"Failed to create LP graph: {e}")
+        return None
 
 def create_sparkline_lp(lp_values: list[int]) -> str:
-    """
-    Crée une sparkline ASCII pour footer (fallback si pas d'image).
-    """
+    """Create ASCII sparkline for footer."""
     if not lp_values or len(lp_values) < 2:
         return "─" * 10
     
@@ -321,46 +382,97 @@ def create_sparkline_lp(lp_values: list[int]) -> str:
     
     return f"{sparkline} {arrow}{abs(delta)}LP"
 
-# ─── Stats & badges ──────────────────────────────────────────────────────────
+# ─── Stats & badges (OPTIMISÉ) ───────────────────────────────────────────────
+@lru_cache(maxsize=128)
+def clamp01_cached(x: float) -> float:
+    """Cached clamp function."""
+    return max(0.0, min(1.0, x))
+
 def clamp01(x: float) -> float:
     return max(0.0, min(1.0, x))
 
 def norm(v: float, mean: float, std: float) -> float:
-    return clamp01(0.5 + (v - mean) / (2*(std or 1)))
+    if std == 0:
+        return 0.5
+    return clamp01(0.5 + (v - mean) / (2 * std))
 
-def compute_oogscore(part, participants):
-    lane = part.get("teamPosition", "UNKNOWN")
-    w = ROLE_WEIGHTS.get(lane, ROLE_WEIGHTS["UNKNOWN"])
-    team = [p for p in participants if p["teamId"] == part["teamId"]]
-
-    μ = lambda k: sum(p[k] for p in team)/len(team)
-    σ = lambda k: math.sqrt(sum((p[k]-μ(k))**2 for p in team)/len(team)) or 1.0
-
+def compute_team_stats(participants: List[Dict], team_id: int) -> Dict[str, Any]:
+    """Pre-compute team statistics for efficiency."""
+    team = [p for p in participants if p["teamId"] == team_id]
+    
+    # Pre-compute derived stats
     for p in team:
         p["kda_p"] = (p["kills"] + p["assists"]) / max(1, p["deaths"])
-        p["cs_p"]  = p.get("totalMinionsKilled", 0) + p.get("neutralMinionsKilled", 0)
+        p["cs_p"] = p.get("totalMinionsKilled", 0) + p.get("neutralMinionsKilled", 0)
         p["obj_p"] = p.get("dragonKills", 0) + p.get("baronKills", 0) + p.get("towerKills", 0)
-        p["util_p"]= p.get("totalHealOnTeammates", 0) + p.get("totalDamageShieldedOnTeammates", 0)
+        p["util_p"] = p.get("totalHealOnTeammates", 0) + p.get("totalDamageShieldedOnTeammates", 0)
+    
+    # Compute means and stds
+    stats = {}
+    for key in ["kda_p", "totalDamageDealtToChampions", "totalDamageTaken",
+                "goldEarned", "cs_p", "obj_p", "visionScore", "util_p"]:
+        values = [p.get(key, 0) for p in team]
+        mean = sum(values) / len(team) if team else 0
+        variance = sum((v - mean) ** 2 for v in values) / len(team) if team else 0
+        std = math.sqrt(variance)
+        stats[key] = {"mean": mean, "std": std or 1.0}
+    
+    return stats
 
-    kda_n = norm(part["kda_p"], μ("kda_p"), σ("kda_p"))
-    dmg_n = 0.6*norm(part.get("totalDamageDealtToChampions", 0), μ("totalDamageDealtToChampions"), σ("totalDamageDealtToChampions")) \
-          + 0.4*norm(part.get("totalDamageTaken", 0),             μ("totalDamageTaken"),             σ("totalDamageTaken"))
-    eco_n = 0.5*norm(part.get("goldEarned", 0), μ("goldEarned"), σ("goldEarned")) \
-          + 0.5*norm(part["cs_p"],              μ("cs_p"),       σ("cs_p"))
-    obj_n = norm(part.get("obj_p",  0), μ("obj_p"),  σ("obj_p"))
-    vis_n = norm(part.get("visionScore", 0), μ("visionScore"), σ("visionScore"))
-    utl_n = norm(part.get("util_p", 0), μ("util_p"), σ("util_p"))
+def compute_oogscore(part: Dict, participants: List[Dict]) -> Tuple[int, Dict]:
+    """Compute OogScore with optimized calculations."""
+    lane = part.get("teamPosition", "UNKNOWN")
+    w = ROLE_WEIGHTS.get(lane, ROLE_WEIGHTS["UNKNOWN"])
+    
+    # Pre-compute team stats
+    team_stats = compute_team_stats(participants, part["teamId"])
+    
+    # Ensure part has derived stats
+    if "kda_p" not in part:
+        part["kda_p"] = (part["kills"] + part["assists"]) / max(1, part["deaths"])
+    if "cs_p" not in part:
+        part["cs_p"] = part.get("totalMinionsKilled", 0) + part.get("neutralMinionsKilled", 0)
+    if "obj_p" not in part:
+        part["obj_p"] = part.get("dragonKills", 0) + part.get("baronKills", 0) + part.get("towerKills", 0)
+    if "util_p" not in part:
+        part["util_p"] = part.get("totalHealOnTeammates", 0) + part.get("totalDamageShieldedOnTeammates", 0)
+    
+    # Compute normalized scores
+    kda_n = norm(part["kda_p"], team_stats["kda_p"]["mean"], team_stats["kda_p"]["std"])
+    
+    dmg_n = (0.6 * norm(part.get("totalDamageDealtToChampions", 0),
+                        team_stats["totalDamageDealtToChampions"]["mean"],
+                        team_stats["totalDamageDealtToChampions"]["std"]) +
+             0.4 * norm(part.get("totalDamageTaken", 0),
+                        team_stats["totalDamageTaken"]["mean"],
+                        team_stats["totalDamageTaken"]["std"]))
+    
+    eco_n = (0.5 * norm(part.get("goldEarned", 0),
+                        team_stats["goldEarned"]["mean"],
+                        team_stats["goldEarned"]["std"]) +
+             0.5 * norm(part["cs_p"],
+                        team_stats["cs_p"]["mean"],
+                        team_stats["cs_p"]["std"]))
+    
+    obj_n = norm(part["obj_p"], team_stats["obj_p"]["mean"], team_stats["obj_p"]["std"])
+    vis_n = norm(part.get("visionScore", 0),
+                 team_stats["visionScore"]["mean"],
+                 team_stats["visionScore"]["std"])
+    utl_n = norm(part["util_p"], team_stats["util_p"]["mean"], team_stats["util_p"]["std"])
     clt_n = clamp01(part.get("pentaKills", 0))
-
-    scores = {"KDA": kda_n, "DMG": dmg_n, "ECO": eco_n, "OBJ": obj_n, "VIS": vis_n, "UTL": utl_n, "CLT": clt_n}
-
+    
+    scores = {
+        "KDA": kda_n, "DMG": dmg_n, "ECO": eco_n, "OBJ": obj_n,
+        "VIS": vis_n, "UTL": utl_n, "CLT": clt_n
+    }
+    
     total = 0.0
     breakdown = {}
     for k, v in scores.items():
         pts = v * w[k] * 100
         total += pts
         breakdown[k] = (v, w[k])
-
+    
     total = min(100.0, total)
     return round(total), breakdown
 
@@ -370,196 +482,257 @@ def compute_badges(
     opponent: Optional[Dict[str, Any]],
     timeline: Dict[str, Optional[int]],
 ) -> List[str]:
+    """Compute achievement badges with optimizations."""
     team = [p for p in info["participants"] if p["teamId"] == part["teamId"]]
-    avg_dmg = sum(p["totalDamageDealtToChampions"] for p in team)/len(team)
-    avg_tank = sum(p["totalDamageTaken"] for p in team)/len(team)
+    
+    # Pre-compute team averages
+    avg_dmg = sum(p["totalDamageDealtToChampions"] for p in team) / len(team)
+    avg_tank = sum(p["totalDamageTaken"] for p in team) / len(team)
+    
     badges: List[str] = []
+    
+    # Top damage
     if part["totalDamageDealtToChampions"] == max(p["totalDamageDealtToChampions"] for p in team):
         badges.append("🏆 Skadoosh")
+    
+    # First blood
     if timeline.get("fb") is not None and timeline["fb"] <= 3 and part["kills"] > 0:
         badges.append("🔪 Lightning Lotus")
-    if timeline.get("ft") is not None and part.get("towerKills",0)>0:
+    
+    # First tower
+    if timeline.get("ft") is not None and part.get("towerKills", 0) > 0:
         badges.append("💣 Bélier de Jade")
-    if part["totalDamageDealtToChampions"] > 1.4*avg_dmg:
+    
+    # High damage
+    if part["totalDamageDealtToChampions"] > 1.4 * avg_dmg:
         badges.append("🔥 Poing du Panda")
-    if part["totalDamageTaken"] > 1.5*avg_tank:
+    
+    # High tank
+    if part["totalDamageTaken"] > 1.5 * avg_tank:
         badges.append("🛡️ Oogway Insight")
-    vis = part.get("visionScore",0)
-    if vis>=45 or vis == max(p.get("visionScore",0) for p in info["participants"]):
+    
+    # Vision
+    vis = part.get("visionScore", 0)
+    max_vis = max(p.get("visionScore", 0) for p in info["participants"])
+    if vis >= 45 or vis == max_vis:
         badges.append("👁️ Œil de Grue")
-    if opponent and part["goldEarned"] - opponent["goldEarned"]>1000:
+    
+    # Gold advantage
+    if opponent and part["goldEarned"] - opponent["goldEarned"] > 1000:
         badges.append("💰 Banquier de Jade")
-    if timeline.get("mythic") is not None and timeline["mythic"]<=9:
+    
+    # Early mythic
+    if timeline.get("mythic") is not None and timeline["mythic"] <= 9:
         badges.append("⚡ Parchemin Express")
-    if part.get("pentaKills",0)>0:
+    
+    # Pentakill
+    if part.get("pentaKills", 0) > 0:
         badges.append("🐉 Cinq Doigts du Wuxi")
-    if part["deaths"]<=2 and (part["kills"]+part["assists"])/max(1,part["deaths"])>=5:
-        badges.append("🧹 Maître kung-fu")
+    
+    # Clean game
+    if part["deaths"] <= 2:
+        kda = (part["kills"] + part["assists"]) / max(1, part["deaths"])
+        if kda >= 5:
+            badges.append("🧹 Maître kung-fu")
+    
     return badges
 
 def find_opponent(part: Dict[str, Any], parts: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    lane = part.get("teamPosition","")
-    return next((p for p in parts if p["teamId"]!=part["teamId"] and p.get("teamPosition")==lane), None)
+    """Find lane opponent."""
+    lane = part.get("teamPosition", "")
+    if not lane:
+        return None
+    return next((p for p in parts if p["teamId"] != part["teamId"] and p.get("teamPosition") == lane), None)
 
 def parse_timeline(raw: Dict[str, Any]) -> Dict[str, Optional[int]]:
-    fb = ft = mythic = None
-    mythics = {3031,6671,6672,6673,6675,6691,6692,6693,6694,6695,3078,3084,3124,3137,3156,3190,3504,4005,4401,4628}
-    for fr in raw.get("info",{}).get("frames",[]):
-        for ev in fr.get("events",[]):
-            t = ev.get("timestamp",0)//60000
+    """Parse timeline for key events with optimized logic."""
+    result = {"fb": None, "ft": None, "mythic": None}
+    
+    frames = raw.get("info", {}).get("frames", [])
+    if not frames:
+        return result
+    
+    for fr in frames:
+        events = fr.get("events", [])
+        for ev in events:
+            t = ev.get("timestamp", 0) // 60000
             et = ev.get("type")
-            if et=="CHAMPION_KILL" and fb is None:
-                fb = t
-            elif et=="BUILDING_KILL" and ev.get("buildingType")=="TOWER" and ft is None:
-                ft = t
-            elif et=="ITEM_PURCHASED" and ev.get("itemId") in mythics and mythic is None:
-                mythic = t
-            if fb and ft and mythic:
-                return {"fb":fb,"ft":ft,"mythic":mythic}
-    return {"fb":fb,"ft":ft,"mythic":mythic}
+            
+            if et == "CHAMPION_KILL" and result["fb"] is None:
+                result["fb"] = t
+            elif et == "BUILDING_KILL" and ev.get("buildingType") == "TOWER" and result["ft"] is None:
+                result["ft"] = t
+            elif et == "ITEM_PURCHASED" and ev.get("itemId") in MYTHIC_ITEMS and result["mythic"] is None:
+                result["mythic"] = t
+            
+            # Early exit if all found
+            if all(v is not None for v in result.values()):
+                return result
+    
+    return result
 
 # ─── UI View ─────────────────────────────────────────────────────────────────
 class HelpView(discord.ui.View):
-    def __init__(self, badges: List[str], lane: str, oog: int, breakdown: Dict[str, Tuple[float,float]]):
+    """Help buttons for badges and OogScore."""
+    def __init__(self, badges: List[str], lane: str, oog: int, breakdown: Dict[str, Tuple[float, float]]):
         super().__init__(timeout=None)
         self.badges = badges
         self.oog = oog
         self.breakdown = breakdown
 
     @staticmethod
-    def format_breakdown(bd: Dict[str, Tuple[float,float]]) -> List[str]:
-        labels = {"KDA":"KDA","DMG":"Dégâts","ECO":"Éco","OBJ":"Obj","VIS":"Vis","UTL":"Util","CLT":"Clt"}
+    def format_breakdown(bd: Dict[str, Tuple[float, float]]) -> str:
+        """Format breakdown as string."""
+        labels = {
+            "KDA": "KDA", "DMG": "Dégâts", "ECO": "Éco", "OBJ": "Obj",
+            "VIS": "Vis", "UTL": "Util", "CLT": "Clt"
+        }
         lines = []
         total = 0.0
-        for k,(v,w) in bd.items():
-            pts = v*w*100
+        for k, (v, w) in bd.items():
+            pts = v * w * 100
             total += pts
-            lines.append(f"• {labels[k]:5}: {v:.2f} × {int(w*100)}% = {pts:.1f}")
-        lines.append("─"*20)
+            lines.append(f"• {labels.get(k, k):5}: {v:.2f} × {int(w*100)}% = {pts:.1f}")
+        lines.append("─" * 20)
         lines.append(f"Total: **{total:.1f} pts**")
-        return lines
+        return "\n".join(lines)
 
     @discord.ui.button(label="ℹ️ Badges ?", style=discord.ButtonStyle.secondary)
     async def show_badges(self, i: discord.Interaction, b: discord.ui.Button):
-        txt = "\n".join(f"{x} — {BADGE_INFO[x]}" for x in self.badges) or "Aucun badge"
-        await i.response.send_message(txt, ephemeral=True, delete_after=10)
+        if not self.badges:
+            txt = "Aucun badge pour cette partie"
+        else:
+            txt = "\n".join(f"{x} — {BADGE_INFO.get(x, 'Badge inconnu')}" for x in self.badges)
+        await i.response.send_message(txt, ephemeral=True, delete_after=15)
 
     @discord.ui.button(label="ℹ️ OogScore ?", style=discord.ButtonStyle.primary)
     async def show_oog(self, i: discord.Interaction, b: discord.ui.Button):
-        header = f"OogScore {self.oog}/100"
-        lines = [header, *self.format_breakdown(self.breakdown)]
-        await i.response.send_message("\n".join(lines), ephemeral=True, delete_after=10)
+        header = f"**OogScore {self.oog}/100**\n"
+        content = self.format_breakdown(self.breakdown)
+        await i.response.send_message(header + content, ephemeral=True, delete_after=15)
 
-# ─── Delta LP ────────────────────────────────────────────────────────────────
+# ─── Delta LP (OPTIMISÉ) ─────────────────────────────────────────────────────
 def lp_delta_between(prev: Tuple[str, str, int], cur: Tuple[str, str, int]) -> int:
+    """Calculate LP delta between two rank states."""
     prev_t, prev_d, prev_lp = prev
     cur_t, cur_d, cur_lp = cur
+    
     if not prev_t or prev_t == "Unranked":
         return 0
+    
+    # Same tier
     if prev_t == cur_t:
-        od = DIV_NUM.get(prev_d, 4)
-        nd = DIV_NUM.get(cur_d, 4)
-        if nd == od:
+        prev_div_num = DIV_NUM.get(prev_d, 4)
+        cur_div_num = DIV_NUM.get(cur_d, 4)
+        
+        if cur_div_num == prev_div_num:
             return cur_lp - prev_lp
-        elif nd < od:
+        elif cur_div_num < prev_div_num:  # Promotion
             return (100 - prev_lp) + cur_lp
-        else:
+        else:  # Demotion
             return -(prev_lp + (100 - cur_lp))
+    
+    # Different tiers
+    prev_tier_idx = TIER_INDEX.get(prev_t, 0)
+    cur_tier_idx = TIER_INDEX.get(cur_t, 0)
+    
+    if cur_tier_idx > prev_tier_idx:
+        return (100 - prev_lp) + cur_lp
     else:
-        if TIER_INDEX.get(cur_t, 0) > TIER_INDEX.get(prev_t, 0):
-            return (100 - prev_lp) + cur_lp
-        else:
-            return -(prev_lp + (100 - cur_lp))
+        return -(prev_lp + (100 - cur_lp))
 
-# ─── Promotion/Demotion Detection ────────────────────────────────────────────
 def detect_rank_change(prev: Tuple[str, str, int], cur: Tuple[str, str, int]) -> Optional[str]:
-    """Detect if player was promoted or demoted."""
+    """Detect promotion or demotion."""
     prev_t, prev_d, prev_lp = prev
     cur_t, cur_d, cur_lp = cur
 
     if not prev_t or prev_t == "Unranked":
         return None
 
-    # Tier change
     prev_tier_idx = TIER_INDEX.get(prev_t, 0)
     cur_tier_idx = TIER_INDEX.get(cur_t, 0)
 
+    # Tier change
     if cur_tier_idx > prev_tier_idx:
         return f"promotion_tier:{cur_t} {cur_d}"
     elif cur_tier_idx < prev_tier_idx:
         return f"demotion_tier:{cur_t} {cur_d}"
 
-    # Same tier, check division
+    # Division change (same tier)
     if prev_t == cur_t:
         prev_div_num = DIV_NUM.get(prev_d, 4)
         cur_div_num = DIV_NUM.get(cur_d, 4)
 
-        if cur_div_num < prev_div_num:  # Lower number = higher rank (I > II)
+        if cur_div_num < prev_div_num:
             return f"promotion_div:{cur_t} {cur_d}"
         elif cur_div_num > prev_div_num:
             return f"demotion_div:{cur_t} {cur_d}"
 
     return None
 
-# ─── Cog ─────────────────────────────────────────────────────────────────────
+# ─── Cog (ULTRA-OPTIMISÉ) ────────────────────────────────────────────────────
 class MatchAlertsCog(commands.Cog):
+    """Match alerts cog with heavy optimizations."""
+    
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         init_db()
         self.db = SessionLocal()
         self.riot = RiotClient(settings.RIOT_API_KEY)
-        self.http = aiohttp.ClientSession()
-        # cache par utilisateur ET par file: {puuid: {queueId: (tier, div, lp)}}
+        
+        # Session with connection pooling
+        connector = aiohttp.TCPConnector(limit=50, limit_per_host=10)
+        timeout = aiohttp.ClientTimeout(total=30, connect=10)
+        self.http = aiohttp.ClientSession(connector=connector, timeout=timeout)
+        
+        # LP cache
         self.lp_cache: Dict[str, Dict[int, Tuple[str, str, int]]] = {}
-        # limiter global pour match/timeline (évite burst)
-        self.sem = asyncio.Semaphore(2)
+        
+        # Semaphore for rate limiting
+        self.sem = asyncio.Semaphore(3)  # Increased from 2
+        
+        # User fetch cache (reduce Discord API calls)
+        self._user_cache: Dict[int, discord.User] = {}
 
-    # ─── Persistance (Redis) - FIXED ──────────────────────────────────────
+    async def cog_unload(self):
+        """Cleanup on unload."""
+        await self.http.close()
+        self.db.close()
+
+    # ─── Persistance (Redis) ──────────────────────────────────────────────
     async def _get_last_state(self, puuid: str, queue_id: int) -> Optional[Tuple[str, str, int]]:
         key = f"lp_last_state:{puuid}:{queue_id}"
         raw = await safe_r_get(key)
-        if isinstance(raw, dict) and "tier" in raw and "div" in raw and "lp" in raw:
+        if isinstance(raw, dict) and all(k in raw for k in ("tier", "div", "lp")):
             try:
                 return str(raw["tier"]), str(raw["div"]), int(raw["lp"])
             except (ValueError, TypeError) as e:
                 log.warning(f"Invalid last_state format for {key}: {e}")
-                return None
         return None
 
     async def _set_last_state(self, puuid: str, queue_id: int, state: Tuple[str, str, int]):
         key = f"lp_last_state:{puuid}:{queue_id}"
         payload = {"tier": state[0], "div": state[1], "lp": int(state[2])}
-        await safe_r_set(key, payload, ttl=90*24*3600)
+        await safe_r_set(key, payload, ttl=90 * 24 * 3600)
 
     async def _get_last_seen_match(self, puuid: str) -> Optional[str]:
         value = await safe_r_get(f"last_seen_match:{puuid}")
         return str(value) if value else None
 
     async def _set_last_seen_match(self, puuid: str, mid: str):
-        await safe_r_set(f"last_seen_match:{puuid}", mid, ttl=90*24*3600)
+        await safe_r_set(f"last_seen_match:{puuid}", mid, ttl=90 * 24 * 3600)
 
-    # ─── Streak Management - FIXED ────────────────────────────────────────
     async def _update_streak(self, puuid: str, queue_id: int, win: bool) -> Tuple[int, bool]:
-        """Update match streak and return (streak_count, is_win_streak)."""
+        """Update match streak."""
         key = f"streak:{puuid}:{queue_id}"
         raw = await safe_r_get(key)
 
-        # Handle both list and None cases
-        if isinstance(raw, list):
-            streak_list = raw
-        else:
-            streak_list = []
-
-        # Add current result
+        streak_list = raw if isinstance(raw, list) else []
         streak_list.append("W" if win else "L")
+        streak_list = streak_list[-10:]  # Keep last 10
 
-        # Keep only last 10
-        streak_list = streak_list[-10:]
+        await safe_r_set(key, streak_list, ttl=90 * 24 * 3600)
 
-        # Save back
-        await safe_r_set(key, streak_list, ttl=90*24*3600)
-
-        # Calculate current streak from end
         if not streak_list:
             return 0, True
 
@@ -574,11 +747,10 @@ class MatchAlertsCog(commands.Cog):
 
         return streak_count, current_result == "W"
 
-    # ─── Personal Records - FIXED ──────────────────────────────────────────
     async def _check_personal_records(
         self, puuid: str, champion: str, kda: float, cs: int, vision: int
     ) -> List[str]:
-        """Check if player beat any personal records and return list of achievements."""
+        """Check personal records."""
         key = f"records:{puuid}:{champion}"
         raw = await safe_r_get(key)
 
@@ -591,40 +763,35 @@ class MatchAlertsCog(commands.Cog):
                 }
             else:
                 records = {"kda": 0.0, "cs": 0, "vision": 0}
-        except (AttributeError, ValueError, KeyError, TypeError) as e:
+        except (ValueError, TypeError) as e:
             log.warning(f"Invalid records format for {key}: {e}")
             records = {"kda": 0.0, "cs": 0, "vision": 0}
 
         achievements = []
         updated = False
 
-        # Check KDA record
         if kda > records["kda"]:
             achievements.append(f"🎖️ Nouveau record KDA sur {champion}: {kda:.2f}")
             records["kda"] = float(kda)
             updated = True
 
-        # Check CS record
         if cs > records["cs"]:
             achievements.append(f"🌾 Record de CS sur {champion}: {cs}")
             records["cs"] = int(cs)
             updated = True
 
-        # Check vision record
         if vision > records["vision"]:
             achievements.append(f"👁️ Record de vision sur {champion}: {vision}")
             records["vision"] = int(vision)
             updated = True
 
-        # Save updated records
         if updated:
-            await safe_r_set(key, records, ttl=365*24*3600)
+            await safe_r_set(key, records, ttl=365 * 24 * 3600)
 
         return achievements
 
-    # ─── Total Games Counter ────────────────────────────────────────────────
     async def _get_total_games(self, puuid: str, queue_id: int) -> int:
-        """Get total number of games played in this queue from database."""
+        """Get total games count."""
         try:
             count = self.db.query(Match).filter_by(puuid=puuid, queue_id=queue_id).count()
             return count
@@ -632,17 +799,41 @@ class MatchAlertsCog(commands.Cog):
             log.warning(f"Error counting total games: {e}")
             return 0
 
+    async def _get_cached_user(self, discord_id: int) -> Optional[discord.User]:
+        """Get user with caching."""
+        if discord_id in self._user_cache:
+            return self._user_cache[discord_id]
+        
+        try:
+            user = await self.bot.fetch_user(discord_id)
+            self._user_cache[discord_id] = user
+            
+            # Limit cache size
+            if len(self._user_cache) > 100:
+                # Remove oldest 20
+                for key in list(self._user_cache.keys())[:20]:
+                    self._user_cache.pop(key, None)
+            
+            return user
+        except Exception as e:
+            log.warning(f"Failed to fetch user {discord_id}: {e}")
+            return None
+
     @commands.Cog.listener()
     async def on_ready(self):
         log.info("Bot ready, fetching DDragon & starting poll")
         await ensure_ddragon_version(self.http)
-        self.poll_matches.start()
+        if not self.poll_matches.is_running():
+            self.poll_matches.start()
 
     @tasks.loop(minutes=5)
     async def poll_matches(self):
+        """Poll for new matches with optimized flow."""
         users = self.db.query(User).all()
-
-        # Traite séquentiellement avec petite pause pour lisser la charge
+        
+        log.info(f"Polling {len(users)} users for new matches")
+        
+        # Process users sequentially with sleep
         for u in users:
             try:
                 await self.handle_user(u)
@@ -651,32 +842,26 @@ class MatchAlertsCog(commands.Cog):
                 self.db.rollback()
             await asyncio.sleep(PER_USER_SLEEP)
 
-    @with_retry()
+    @with_retry(max_attempts=3, base_delay=1.0)
     async def _get_match_ids(self, user: User, n: int):
-        """Get match IDs for user - now fully async."""
+        """Get match IDs."""
         return await self.riot.get_match_ids(user.region, user.puuid, n)
 
-    @with_retry()
+    @with_retry(max_attempts=3, base_delay=1.0)
     async def _get_match(self, user: User, mid: str):
-        """Get match details - now fully async."""
+        """Get match details."""
         return await self.riot.get_match_by_id(user.region, mid)
 
-    @with_retry()
+    @with_retry(max_attempts=3, base_delay=1.0)
     async def _get_timeline(self, user: User, mid: str):
-        """Get match timeline - now fully async."""
+        """Get match timeline."""
         return await self.riot.get_match_timeline_by_id(user.region, mid)
 
     async def handle_user(self, user: User):
-        """
-        Stratégie anti-429 :
-          1) On tire juste le dernier ID (count=1) -> 1 appel léger.
-          2) Si identique au dernier vu (Redis) => on s'arrête (0 appel match).
-          3) Si différent => on backfill jusqu'à 5 IDs (2e appel), et on traite
-             seulement ceux plus récents que 'last_seen'.
-        """
+        """Handle user with optimized anti-429 strategy."""
         last_seen = await self._get_last_seen_match(user.puuid)
 
-        # Étape 1: un seul ID
+        # Step 1: Get latest match ID
         try:
             latest_ids = await self._get_match_ids(user, 1) or []
         except Exception as e:
@@ -688,127 +873,118 @@ class MatchAlertsCog(commands.Cog):
 
         newest = latest_ids[0]
         if newest == last_seen:
-            # Rien de nouveau, on ne charge rien d'autre
-            return
+            return  # No new matches
 
-        # Étape 2: backfill jusqu'à 5 si on détecte du nouveau
+        # Step 2: Backfill up to 5 if needed
         try:
             ids = await self._get_match_ids(user, 5) or []
         except Exception as e:
             log.warning(f"IDs(5) fail for {user.discord_id}: {e}")
-            ids = latest_ids  # fallback
+            ids = latest_ids
 
-        # On arrête à l'ancien last_seen s'il apparaît
+        # Cut off at last seen
         if last_seen and last_seen in ids:
             cutoff_index = ids.index(last_seen)
-            to_process = ids[:cutoff_index]  # plus récents uniquement
+            to_process = ids[:cutoff_index]
         else:
-            to_process = ids  # tous (jusqu'à 5), on a peut-être manqué plusieurs games
+            to_process = ids
 
-        # Traite du plus ancien au plus récent pour cohérence
+        # Process from oldest to newest
         for mid in reversed(to_process):
-            # Double garde DB (évite re-fetch si déjà traité)
+            # Check if already in DB
             exists = self.db.query(Match).filter_by(match_id=mid, puuid=user.puuid).first()
             if exists:
                 continue
             
             try:
                 await self.process_match(user, mid)
-                # MAJ last_seen après chaque succès (évite retraiter si crash en plein lot)
                 await self._set_last_seen_match(user.puuid, mid)
             except Exception as e:
                 log.error(f"Failed to process match {mid} for {user.discord_id}: {e}", exc_info=True)
-                # Continue processing other matches even if one fails
 
     async def process_match(self, user: User, mid: str):
-        async with self.sem:  # évite burst match+timeline
+        """Process a single match with all features."""
+        # Fetch match data with semaphore
+        async with self.sem:
             match_data = await self._get_match(user, mid)
-            
+        
         info = match_data.get("info")
         if not info:
             log.warning(f"No info in match data for {mid}")
             return
-            
+        
         part = next((p for p in info["participants"] if p["puuid"] == user.puuid), None)
         if not part:
             log.warning(f"User {user.puuid} not found in match {mid}")
             return
-            
+        
+        # Only process ranked games
         if info["queueId"] not in RANKED_QUEUES:
-            # Même si non-ranked, on a déjà mis à jour last_seen dans handle_user
             return
 
         queue_id = info["queueId"]
 
-        # Rang/LP/WR de la bonne file
+        # Get rank info
         tier, div, lp_now, wr = await self._get_rank(user, queue_id)
 
-        # 1) Cache mémoire
+        # LP state management
         prev_state = self.lp_cache.get(user.puuid, {}).get(queue_id)
-        # 2) Redis si vide (reboot)
         if prev_state is None:
             prev_state = await self._get_last_state(user.puuid, queue_id)
-        # 3) Si rien (1re fois), base = courante
         if prev_state is None:
             prev_state = (tier, div, lp_now)
 
         cur_state = (tier, div, lp_now)
         lp_delta = lp_delta_between(prev_state, cur_state)
 
-        # MAJ cache + Redis
+        # Update cache
         self.lp_cache.setdefault(user.puuid, {})[queue_id] = cur_state
         await self._set_last_state(user.puuid, queue_id, cur_state)
 
-        # ── Feature 1: Streak Detection ──────────────────────────────────────
+        # Features
         streak_count, is_win_streak = await self._update_streak(user.puuid, queue_id, part["win"])
-
-        # ── Feature 2: Rank Change Detection ──────────────────────────────────
         rank_change = detect_rank_change(prev_state, cur_state)
 
-        # Historique LP par file 30j - FIXED
+        # LP history
         now = int(time.time())
         hist_key = f"lp_hist:{user.puuid}:{queue_id}"
         raw = await safe_r_get(hist_key)
         
         try:
-            if isinstance(raw, dict):
-                hist: Dict[int, int] = {int(k): int(v) for k, v in raw.items()}
-            else:
-                hist = {}
-        except (AttributeError, ValueError, TypeError) as e:
-            log.warning(f"Invalid LP history format for {hist_key}: {e}")
+            hist = {int(k): int(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+        except (ValueError, TypeError):
             hist = {}
-            
+        
         hist[now] = int(lp_now)
         thirty_days = 30 * 24 * 3600
         hist = {t: v for t, v in hist.items() if (now - t) <= thirty_days}
         await safe_r_set(hist_key, {str(t): v for t, v in hist.items()}, ttl=thirty_days)
 
-        # Opposant lane, diffs
+        # Opponent and diffs
         opponent = find_opponent(part, info["participants"])
         gold_diff = part["goldEarned"] - (opponent["goldEarned"] if opponent else 0)
-        exp_diff  = part.get("champExperience",0) - (opponent.get("champExperience",0) if opponent else 0)
+        exp_diff = part.get("champExperience", 0) - (opponent.get("champExperience", 0) if opponent else 0)
 
-        # Timeline (protégé par le sem)
+        # Timeline
         async with self.sem:
             timeline_data = await self._get_timeline(user, mid)
         timeline = parse_timeline(timeline_data)
-        badges   = compute_badges(part, info, opponent, timeline)
+        badges = compute_badges(part, info, opponent, timeline)
 
-        # ── Détection DuoQ : même team, autre joueur link dans DB (queue 420)
+        # Duo detection
         duo_names: List[str] = []
         if queue_id == 420:
-            same_team_puuids = {p["puuid"] for p in info["participants"] if p["teamId"] == part["teamId"] and p["puuid"] != user.puuid}
+            same_team_puuids = {
+                p["puuid"] for p in info["participants"]
+                if p["teamId"] == part["teamId"] and p["puuid"] != user.puuid
+            }
             if same_team_puuids:
                 linked_teammates = self.db.query(User).filter(User.puuid.in_(same_team_puuids)).all()
                 for mate in linked_teammates:
-                    try:
-                        du = await self.bot.fetch_user(mate.discord_id)
-                        duo_names.append(du.display_name)
-                    except Exception:
-                        duo_names.append(mate.puuid[:6])
+                    du = await self._get_cached_user(mate.discord_id)
+                    duo_names.append(du.display_name if du else mate.puuid[:6])
 
-        # ── Feature 6: Personal Records ──────────────────────────────────────
+        # Personal records
         kda_value = (part["kills"] + part["assists"]) / max(1, part["deaths"])
         cs_value = part.get("totalMinionsKilled", 0) + part.get("neutralMinionsKilled", 0)
         vision_value = part.get("visionScore", 0)
@@ -816,52 +992,43 @@ class MatchAlertsCog(commands.Cog):
             user.puuid, part["championName"], kda_value, cs_value, vision_value
         )
 
-        # ── Feature 4: LP Trend Graph ─────────────────────────────────────────
-        # Extract last 10 LP values from history (sorted by timestamp)
-        lp_trend_data = sorted(hist.items())[-10:]  # Get last 10 entries
-        lp_values = [lp for _, lp in lp_trend_data] if lp_trend_data else []
+        # LP trend
+        lp_trend_data = sorted(hist.items())[-10:]
+        lp_values = [lp for _, lp in lp_trend_data]
 
-        # persist match
+        # Persist match
         match = Match(
             match_id=mid,
             puuid=user.puuid,
             queue_id=info["queueId"],
             win=part["win"],
-            timestamp=dt.datetime.fromtimestamp(info["gameStartTimestamp"]/1000),
+            timestamp=dt.datetime.fromtimestamp(info["gameStartTimestamp"] / 1000),
         )
         self.db.add(match)
         try:
             self.db.commit()
-            log.debug(f"Persisted match {mid}")
         except IntegrityError:
             self.db.rollback()
-            log.info(f"Match {mid} already in database, skipping persist")
+            log.info(f"Match {mid} already in database")
             return
 
+        # Send embed
         await self._send_embed(
-            user, info, part,
-            tier, div, lp_now, lp_delta, wr,
+            user, info, part, tier, div, lp_now, lp_delta, wr,
             gold_diff, exp_diff, badges,
             opponent["championName"] if opponent else "?",
-            duo_names,
-            streak_count, is_win_streak,
-            rank_change,
-            personal_records,
-            lp_values
+            duo_names, streak_count, is_win_streak, rank_change,
+            personal_records, lp_values
         )
 
     async def _get_rank(self, user: User, queue_id: int) -> Tuple[str, str, int, int]:
-        """Get player rank information for specific queue - now fully async."""
+        """Get rank information."""
         entries = await self.riot.get_league_entries_by_puuid(user.region, user.puuid)
 
-        # Tente correspondance exacte, sinon fallback si Flex
         qtype = QUEUE_TYPE.get(queue_id)
         ent = next((e for e in entries if e["queueType"] == qtype), None)
 
         if ent is None:
-            log.warning(
-                f"[RANK] Pas trouvé d'entrée pour queue_id={queue_id} (qtype={qtype}), entries={entries}"
-            )
             return "Unranked", "", 0, 0
 
         wins, losses = ent.get("wins", 0), ent.get("losses", 0)
@@ -869,20 +1036,17 @@ class MatchAlertsCog(commands.Cog):
         return ent["tier"].title(), ent["rank"], int(ent["leaguePoints"]), wr
 
     async def _send_embed(
-        self, user: User, info: Any, part: Any,
-        tier: str, div: str, lp: int, lp_delta: int, wr: int,
-        gold_diff: int, exp_diff: int,
-        badges: List[str], opp_champ: str,
-        duo_names: List[str],
-        streak_count: int, is_win_streak: bool,
-        rank_change: Optional[str],
-        personal_records: List[str],
-        lp_values: List[int]
+        self, user: User, info: Any, part: Any, tier: str, div: str, lp: int,
+        lp_delta: int, wr: int, gold_diff: int, exp_diff: int, badges: List[str],
+        opp_champ: str, duo_names: List[str], streak_count: int, is_win_streak: bool,
+        rank_change: Optional[str], personal_records: List[str], lp_values: List[int]
     ):
-        log.info(f"Sending embed for {user.discord_id}")
-        channel = self.bot.get_channel(settings.ALERT_CHANNEL_ID) or await self.bot.fetch_channel(settings.ALERT_CHANNEL_ID)
+        """Send match embed with all features."""
+        channel = self.bot.get_channel(settings.ALERT_CHANNEL_ID)
+        if channel is None:
+            channel = await self.bot.fetch_channel(settings.ALERT_CHANNEL_ID)
 
-        # ── Feature 5: Special Notifications ──────────────────────────────────
+        # Special notifications
         special_notification = ""
         if rank_change:
             if rank_change.startswith("promotion"):
@@ -892,41 +1056,39 @@ class MatchAlertsCog(commands.Cog):
                 _, rank_str = rank_change.split(":", 1)
                 special_notification = f"📉 Demotion en {rank_str}\n"
 
-        # Check for milestones
         total_games = await self._get_total_games(user.puuid, info["queueId"])
         if total_games == 100:
             special_notification += "🎯 **100 parties jouées !**\n"
         if wr == 50 and total_games >= 10:
             special_notification += "⚖️ **50% de winrate atteint !**\n"
 
-        # Build description with streak if >= 3
+        # Description
         description_parts = [
             f"**{RANKED_QUEUES[info['queueId']]}** · "
             f"{dt.timedelta(seconds=info['gameDuration'])} · "
-            f"{ROLE_EMOJI.get(part.get('teamPosition','UNKNOWN'))}"
+            f"{ROLE_EMOJI.get(part.get('teamPosition', 'UNKNOWN'))}"
         ]
 
-        # ── Feature 1: Streak Display ─────────────────────────────────────────
+        # Streak display
         if streak_count >= 3:
+            abs_delta = abs(lp_delta)
             if is_win_streak:
-                abs_delta = abs(lp_delta)
                 description_parts.append(f"\n🔥 **{streak_count} victoires d'affilée !** +{abs_delta} LP")
             else:
-                abs_delta = abs(lp_delta)
                 description_parts.append(f"\n❄️ **Série noire : {streak_count} défaites** -{abs_delta} LP")
 
         embed = discord.Embed(
             color=0x2ECC71 if part["win"] else 0xE74C3C,
             description=special_notification + "".join(description_parts),
-            timestamp=dt.datetime.fromtimestamp(info["gameEndTimestamp"]//1000)
+            timestamp=dt.datetime.fromtimestamp(info["gameEndTimestamp"] // 1000)
         )
-        try:
-            du = await self.bot.fetch_user(user.discord_id)
-            name = du.display_name
-        except Exception:
-            name = user.puuid[:6]
-        champ_icon = f"https://ddragon.leagueoflegends.com/cdn/{DDragon.version}/img/champion/{part['championName']}.png"
-        prof_icon  = f"https://ddragon.leagueoflegends.com/cdn/{DDragon.version}/img/profileicon/{part.get('profileIcon',0)}.png"
+
+        # Author
+        du = await self._get_cached_user(user.discord_id)
+        name = du.display_name if du else user.puuid[:6]
+        
+        champ_icon = f"https://ddragon.leagueoflegends.com/cdn/{ddragon.version}/img/champion/{part['championName']}.png"
+        prof_icon = f"https://ddragon.leagueoflegends.com/cdn/{ddragon.version}/img/profileicon/{part.get('profileIcon', 0)}.png"
 
         outcome = "Victoire" if part["win"] else "Défaite"
         if duo_names:
@@ -935,17 +1097,17 @@ class MatchAlertsCog(commands.Cog):
         embed.set_author(name=f"{name} — {outcome}", icon_url=champ_icon)
         embed.set_thumbnail(url=prof_icon)
 
+        # Rank field
         pct = lp % 100
-        filled = int(pct/(100/LP_BAR_LEN))
-        bar = "█"*filled + "░"*(LP_BAR_LEN-filled)
+        filled = int(pct / (100 / LP_BAR_LEN))
+        bar = "█" * filled + "░" * (LP_BAR_LEN - filled)
 
-        # ── Feature 2: Rank Up/Down Prediction ────────────────────────────────
         rank_value = f"{tier} {div}\n{lp} LP ({lp_delta:+})\n{bar}\n{wr}% WR"
 
         # Promo prediction
         if pct >= 75 and tier not in ["Master", "Grandmaster", "Challenger"]:
             lp_needed = 100 - pct
-            wins_needed = max(1, int(lp_needed / 20))  # Assume ~20 LP per win
+            wins_needed = max(1, int(lp_needed / 20))
             rank_value += f"\n🎯 Promo dans {lp_needed} LP ({wins_needed} victoire(s))"
 
         # Demotion warning
@@ -953,30 +1115,36 @@ class MatchAlertsCog(commands.Cog):
             rank_value += f"\n⚠️ Attention demotion ! (0 LP)"
 
         embed.add_field(name="Rank", value=rank_value, inline=True)
-        embed.add_field(name="Stats", value=f"{EM_KDA} **{part['kills']}/{part['deaths']}/{part['assists']}**\n{EM_GOLD} ΔGold **{gold_diff:+}** · ΔXP **{exp_diff:+}**", inline=True)
-        embed.add_field(name="Vision", value=f"{EM_VISION} {part.get('visionScore',0)}", inline=True)
-        cs = part.get("totalMinionsKilled",0)+part.get("neutralMinionsKilled",0)
-        embed.add_field(name="CS", value=f"{EM_CS} {cs} ({cs/(info['gameDuration']/60):.1f}/min)", inline=True)
+
+        # Stats
+        stats_value = (
+            f"{EM_KDA} **{part['kills']}/{part['deaths']}/{part['assists']}**\n"
+            f"{EM_GOLD} ΔGold **{gold_diff:+}** · ΔXP **{exp_diff:+}**"
+        )
+        embed.add_field(name="Stats", value=stats_value, inline=True)
+        embed.add_field(name="Vision", value=f"{EM_VISION} {part.get('visionScore', 0)}", inline=True)
+
+        cs = part.get("totalMinionsKilled", 0) + part.get("neutralMinionsKilled", 0)
+        cs_per_min = cs / (info['gameDuration'] / 60)
+        embed.add_field(name="CS", value=f"{EM_CS} {cs} ({cs_per_min:.1f}/min)", inline=True)
+
+        # OogScore
         oog, breakdown = compute_oogscore(part, info["participants"])
 
-        # ── Feature 3: MVP Detection ───────────────────────────────────────────
-        all_oogscores = []
-        for p in info["participants"]:
-            p_score, _ = compute_oogscore(p, info["participants"])
-            all_oogscores.append((p["puuid"], p_score))
-
-        # Sort by score descending
+        # MVP detection
+        all_oogscores = [(p["puuid"], compute_oogscore(p, info["participants"])[0]) 
+                         for p in info["participants"]]
         all_oogscores.sort(key=lambda x: x[1], reverse=True)
-        player_rank = next((i+1 for i, (puuid, _) in enumerate(all_oogscores) if puuid == user.puuid), 0)
+        player_rank = next((i + 1 for i, (puuid, _) in enumerate(all_oogscores) if puuid == user.puuid), 0)
 
         if oog < 40:
-            emo,label = "🟥","Grue bancale"
+            emo, label = "🟥", "Grue bancale"
         elif oog < 70:
-            emo,label = "🟨","Apprenti"
+            emo, label = "🟨", "Apprenti"
         elif oog < 90:
-            emo,label = "🟩","Maître du Jade"
+            emo, label = "🟩", "Maître du Jade"
         else:
-            emo,label = "🟦","Skadoosh"
+            emo, label = "🟦", "Skadoosh"
 
         oog_value = f"{emo} **{oog}/100** — {label}"
         if player_rank == 1:
@@ -987,33 +1155,29 @@ class MatchAlertsCog(commands.Cog):
         embed.add_field(name="OogScore", value=oog_value, inline=True)
         embed.add_field(name="Badges", value=" · ".join(badges) or "—", inline=False)
 
-        # ── Feature 6: Personal Records ───────────────────────────────────────
+        # Personal records
         if personal_records:
-            records_text = "\n".join(personal_records)
-            embed.add_field(name="Records Personnels", value=records_text, inline=False)
+            embed.add_field(name="Records Personnels", value="\n".join(personal_records), inline=False)
 
-        # ── Feature 4: LP Trend Graph (NOUVEAU) ───────────────────────────────
+        # Files
         files_to_send = []
-        
-        # Build sprite d'abord
-        sprite = await make_sprite([part.get(f"item{i}",0) for i in range(7)], self.http)
+
+        # Build sprite
+        sprite = await make_sprite([part.get(f"item{i}", 0) for i in range(7)], self.http)
         if sprite:
             files_to_send.append(sprite)
             embed.set_image(url="attachment://build.png")
-        
-        # Ajouter le graphique LP si disponible
+
+        # LP graph
         if lp_values and len(lp_values) >= 2:
             lp_graph_file = create_compact_lp_graph(lp_values, part['win'])
             if lp_graph_file:
                 files_to_send.append(lp_graph_file)
-                # Si on a déjà le sprite en image principale, mettre le graph en thumbnail
                 if sprite:
                     embed.set_thumbnail(url="attachment://lp_trend.png")
                 else:
-                    # Sinon, utiliser le graph comme image principale
                     embed.set_image(url="attachment://lp_trend.png")
                 
-                # Footer avec sparkline en plus (optionnel)
                 sparkline = create_sparkline_lp(lp_values)
                 embed.set_footer(text=f"Partie #{total_games} | {sparkline}")
             else:
@@ -1021,12 +1185,11 @@ class MatchAlertsCog(commands.Cog):
         else:
             embed.set_footer(text=f"Partie #{total_games}")
 
-        view = HelpView(badges, part.get("teamPosition","UNKNOWN"), oog, breakdown)
+        view = HelpView(badges, part.get("teamPosition", "UNKNOWN"), oog, breakdown)
         await channel.send(embed=embed, files=files_to_send, view=view, delete_after=172800)
 
     @app_commands.command(name="alerts_test", description="Force un poll immédiat")
     async def alerts_test(self, interaction: discord.Interaction):
-        log.info("Manual poll triggered")
         await interaction.response.defer(ephemeral=True)
         await self.poll_matches()
         await interaction.followup.send("✅ Poll exécuté !", ephemeral=True)
