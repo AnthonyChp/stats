@@ -396,7 +396,7 @@ class DraftCog(commands.Cog):
         self.bot = bot
         self.series_by_thread: dict[int, SeriesState] = {}
         # Précharger les champions au démarrage
-        self.bot.loop.create_task(self._preload())
+        #self.bot.loop.create_task(self._preload())
     
     async def _preload(self):
         """Précharge les données au démarrage."""
