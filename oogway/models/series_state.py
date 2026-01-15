@@ -6,23 +6,21 @@
 
 from __future__ import annotations
 import uuid
-from dataclasses import dataclass, field
 from typing import List, Set, Optional
 
 
-@dataclass
 class Game:
     """Un match individuel à l'intérieur du Bo."""
     __slots__ = ('picks_a', 'picks_b', 'bans_a', 'bans_b', 'winner')
     
-    picks_a: List[str] = field(default_factory=list)
-    picks_b: List[str] = field(default_factory=list)
-    bans_a:  List[str] = field(default_factory=list)
-    bans_b:  List[str] = field(default_factory=list)
-    winner: Optional[str] = None  # "A" ou "B"
+    def __init__(self):
+        self.picks_a: List[str] = []
+        self.picks_b: List[str] = []
+        self.bans_a: List[str] = []
+        self.bans_b: List[str] = []
+        self.winner: Optional[str] = None  # "A" ou "B"
 
 
-@dataclass
 class SeriesState:
     """État global de la série — stocké uniquement en RAM."""
     __slots__ = (
@@ -31,23 +29,26 @@ class SeriesState:
         'guild', 'captain_a_name', 'captain_b_name', 'status_msg_id'
     )
     
-    id: str
-    bo: int
-    team_a: list[int]                        # IDs Discord
-    team_b: list[int]
-    captain_a: int                           # ID Discord
-    captain_b: int
-    blue_side: str = "A"                     # "A" ou "B"
-    score_a: int = 0
-    score_b: int = 0
-    fearless_pool: Set[str] = field(default_factory=set)
-    games: List[Game] = field(default_factory=lambda: [Game()])
-    
-    # Cache pour optimiser les lookups répétés
-    guild: Optional[object] = None
-    captain_a_name: str = "Cap A"
-    captain_b_name: str = "Cap B"
-    status_msg_id: Optional[int] = None
+    def __init__(self, id: str, bo: int, team_a: list[int], team_b: list[int],
+                 captain_a: int, captain_b: int, blue_side: str = "A",
+                 score_a: int = 0, score_b: int = 0):
+        self.id = id
+        self.bo = bo
+        self.team_a = team_a
+        self.team_b = team_b
+        self.captain_a = captain_a
+        self.captain_b = captain_b
+        self.blue_side = blue_side
+        self.score_a = score_a
+        self.score_b = score_b
+        self.fearless_pool: Set[str] = set()
+        self.games: List[Game] = [Game()]
+        
+        # Cache pour optimiser les lookups répétés
+        self.guild: Optional[object] = None
+        self.captain_a_name: str = "Cap A"
+        self.captain_b_name: str = "Cap B"
+        self.status_msg_id: Optional[int] = None
 
     # --------------------------------------------------------------------- #
     @classmethod
@@ -60,16 +61,7 @@ class SeriesState:
             team_a=team_a,
             team_b=team_b,
             captain_a=captain_a,
-            captain_b=captain_b,
-            blue_side="A",
-            score_a=0,
-            score_b=0,
-            fearless_pool=set(),
-            games=[Game()],
-            guild=None,
-            captain_a_name="Cap A",
-            captain_b_name="Cap B",
-            status_msg_id=None
+            captain_b=captain_b
         )
 
     @property
