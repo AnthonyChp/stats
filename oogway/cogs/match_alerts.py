@@ -51,7 +51,7 @@ SPRITE_SIZE = 32
 LP_BAR_LEN = 10
 
 # Throttle
-PER_USER_SLEEP = 0.15
+PER_USER_SLEEP = 0.5
 
 EM_GOLD, EM_KDA, EM_VISION, EM_CS = "🟡", "⚔️", "👁️", "🌾"
 ROLE_EMOJI = {
