@@ -15,10 +15,6 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from PIL import Image
 from sqlalchemy.exc import IntegrityError
-import numpy as np
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 
 from oogway.database import Match, SessionLocal, User, init_db
 from oogway.riot.client import RiotClient
@@ -51,7 +47,7 @@ SPRITE_SIZE = 32
 LP_BAR_LEN = 10
 
 # Throttle
-PER_USER_SLEEP = 0.5
+PER_USER_SLEEP = 0.4
 
 EM_GOLD, EM_KDA, EM_VISION, EM_CS = "🟡", "⚔️", "👁️", "🌾"
 ROLE_EMOJI = {
@@ -85,12 +81,6 @@ ROLE_WEIGHTS: Dict[str, Dict[str, float]] = {
 }
 
 # Couleurs pour graphiques
-BG_COLOR = '#0a1428'
-GRID_COLOR = '#1e2d3d'
-GOLD_COLOR = '#c89b3c'
-WIN_COLOR = '#2ecc71'
-LOSS_COLOR = '#e74c3c'
-TEXT_COLOR = '#f0f0f0'
 
 # Mythic items set (immutable for faster lookup)
 MYTHIC_ITEMS = frozenset({
@@ -258,106 +248,6 @@ async def make_sprite(item_ids: List[int], session: aiohttp.ClientSession) -> Op
     return discord.File(buf, filename="build.png")
 
 # ─── Mini LP Graph (OPTIMISÉ) ────────────────────────────────────────────────
-def create_compact_lp_graph(lp_values: list[int], current_win: bool) -> Optional[discord.File]:
-    """Create compact LP curve for match embeds with optimizations."""
-    if not lp_values or len(lp_values) < 2:
-        return None
-    
-    try:
-        x = np.arange(len(lp_values))
-        y = np.array(lp_values, dtype=np.int32)
-        
-        lp_start = lp_values[0]
-        lp_end = lp_values[-1]
-        lp_delta = lp_end - lp_start
-        lp_max = int(np.max(y))
-        lp_min = int(np.min(y))
-        
-        # === OPTIMIZED GRAPH CREATION ===
-        fig, ax = plt.subplots(figsize=(8, 2.5), facecolor=BG_COLOR, dpi=100)
-        ax.set_facecolor(BG_COLOR)
-        
-        # Gradient background
-        color = WIN_COLOR if lp_delta >= 0 else LOSS_COLOR
-        ax.axhspan(lp_min, lp_max, alpha=0.05, color=color)
-        
-        # Reference line
-        mid_lp = (lp_max + lp_min) / 2
-        ax.axhline(y=mid_lp, color=GRID_COLOR, linestyle='--', linewidth=1, alpha=0.3)
-        
-        # Main curve with glow
-        for i in range(2):
-            alpha = 0.15 * (2 - i)
-            width = 3 + i * 1.5
-            ax.plot(x, y, color=GOLD_COLOR, linewidth=width, alpha=alpha, solid_capstyle='round')
-        
-        # Main line
-        ax.plot(x, y, color=GOLD_COLOR, linewidth=2.5, marker='o', markersize=5,
-                markeredgecolor='white', markeredgewidth=1, zorder=5)
-        
-        # Highlight last point
-        last_color = WIN_COLOR if current_win else LOSS_COLOR
-        ax.scatter(x[-1], y[-1], s=120, c=last_color, marker='o',
-                   edgecolors='white', linewidths=2, zorder=10)
-        
-        # Delta annotation
-        if lp_delta != 0:
-            arrow_y = lp_end + (5 if lp_delta >= 0 else -5)
-            delta_symbol = '▲' if lp_delta >= 0 else '▼'
-            delta_color = WIN_COLOR if lp_delta >= 0 else LOSS_COLOR
-            
-            ax.annotate(
-                f'{delta_symbol} {abs(lp_delta)} LP',
-                xy=(x[-1], lp_end),
-                xytext=(x[-1] + 0.8, arrow_y),
-                fontsize=9,
-                color=delta_color,
-                fontweight='bold',
-                ha='left',
-                bbox=dict(boxstyle='round,pad=0.3', facecolor=BG_COLOR,
-                         edgecolor=delta_color, alpha=0.9),
-                arrowprops=dict(arrowstyle='->', color=delta_color, lw=2, alpha=0.7)
-            )
-        
-        # Minimal axis styling
-        for spine in ['top', 'right']:
-            ax.spines[spine].set_visible(False)
-        for spine in ['bottom', 'left']:
-            ax.spines[spine].set_color(GRID_COLOR)
-            ax.spines[spine].set_linewidth(1.5)
-        
-        ax.grid(True, alpha=0.1, color=GRID_COLOR, linestyle='-', linewidth=0.8)
-        ax.set_axisbelow(True)
-        
-        # Labels
-        ax.set_xlabel('10 dernières parties', fontsize=8, color=TEXT_COLOR,
-                      fontweight='bold', labelpad=5)
-        ax.set_ylabel('LP', fontsize=8, color=TEXT_COLOR, fontweight='bold', labelpad=5)
-        
-        # Ticks
-        ax.set_xticks([0, len(lp_values) - 1])
-        ax.set_xticklabels(['', 'Maintenant'], fontsize=7, color=TEXT_COLOR)
-        ax.tick_params(colors=TEXT_COLOR, labelsize=7, length=3)
-        
-        # Limits
-        lp_range = lp_max - lp_min or 10
-        ax.set_ylim(lp_min - lp_range * 0.15, lp_max + lp_range * 0.15)
-        ax.set_xlim(-0.3, len(lp_values) - 0.7)
-        
-        plt.tight_layout()
-        
-        # Save optimized
-        buf = io.BytesIO()
-        fig.savefig(buf, format='png', dpi=100, bbox_inches='tight',
-                    facecolor=BG_COLOR, edgecolor='none', optimize=True)
-        plt.close(fig)
-        buf.seek(0)
-        
-        return discord.File(buf, filename='lp_trend.png')
-    except Exception as e:
-        log.error(f"Failed to create LP graph: {e}")
-        return None
-
 def create_sparkline_lp(lp_values: list[int]) -> str:
     """Create ASCII sparkline for footer."""
     if not lp_values or len(lp_values) < 2:
@@ -1168,18 +1058,18 @@ class MatchAlertsCog(commands.Cog):
             files_to_send.append(sprite)
             embed.set_image(url="attachment://build.png")
 
-        # LP graph
+        # Footer with sparkline
         if lp_values and len(lp_values) >= 2:
-            lp_graph_file = create_compact_lp_graph(lp_values, part['win'])
-            if lp_graph_file:
-                files_to_send.append(lp_graph_file)
-                if sprite:
-                    embed.set_thumbnail(url="attachment://lp_trend.png")
-                else:
-                    embed.set_image(url="attachment://lp_trend.png")
-                
-                sparkline = create_sparkline_lp(lp_values)
-                embed.set_footer(text=f"Partie #{total_games} | {sparkline}")
+            sparkline = create_sparkline_lp(lp_values)
+            embed.set_footer(text=f"Partie #{total_games} | {sparkline}")
+        else:
+            embed.set_footer(text=f"Partie #{total_games}")
+        # Footer with sparkline
+        if lp_values and len(lp_values) >= 2:
+            sparkline = create_sparkline_lp(lp_values)
+            embed.set_footer(text=f"Partie #{total_games} | {sparkline}")
+        else:
+            embed.set_footer(text=f"Partie #{total_games}")
             else:
                 embed.set_footer(text=f"Partie #{total_games}")
         else:
