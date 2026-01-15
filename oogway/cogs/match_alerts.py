@@ -1064,16 +1064,6 @@ class MatchAlertsCog(commands.Cog):
             embed.set_footer(text=f"Partie #{total_games} | {sparkline}")
         else:
             embed.set_footer(text=f"Partie #{total_games}")
-        # Footer with sparkline
-        if lp_values and len(lp_values) >= 2:
-            sparkline = create_sparkline_lp(lp_values)
-            embed.set_footer(text=f"Partie #{total_games} | {sparkline}")
-        else:
-            embed.set_footer(text=f"Partie #{total_games}")
-            else:
-                embed.set_footer(text=f"Partie #{total_games}")
-        else:
-            embed.set_footer(text=f"Partie #{total_games}")
 
         view = HelpView(badges, part.get("teamPosition", "UNKNOWN"), oog, breakdown)
         await channel.send(embed=embed, files=files_to_send, view=view, delete_after=172800)
