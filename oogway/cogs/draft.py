@@ -2,8 +2,8 @@
 # ============================================================================
 # Draft compétitive – fil public, nom du champion seul, recap + boutons Win
 # + Stats méta (pick/ban/win) persistées dans Redis + commande /meta
-# + “Capitaines only” partout (Win, side choice, ready-check)
-# + Couleur d’embed dynamique (A=bleu, B=rouge) et affichage pseudos capitaines
+# + "Capitaines only" partout (Win, side choice, ready-check)
+# + Couleur d'embed dynamique (A=bleu, B=rouge) et affichage pseudos capitaines
 # ============================================================================
 
 from __future__ import annotations
@@ -165,19 +165,21 @@ def _compute_meta_tables(data: dict, top: int = 10, min_picks_for_wr: int = 10):
     }
 
 
-# ──────────────────────── Vues d’interaction ────────────────────────────────
+# ──────────────────────── Vues d'interaction ────────────────────────────────
 class ResultView(discord.ui.View):
     """Boutons Win – réservés aux capitaines. Le message est supprimé après report."""
     def __init__(self, cog: "DraftCog", series: SeriesState):
         super().__init__(timeout=None)
         self.cog, self.series = cog, series
         self._processing = False
+        self._lock = asyncio.Lock()  # FIX: Lock pour éviter double clic
 
     async def _guard(self, inter: Interaction) -> bool:
         if inter.user.id not in (self.series.captain_a, self.series.captain_b):
             await inter.response.send_message("⛔ Capitaines only.", ephemeral=True)
             return False
-        if self._processing:
+        # FIX: Utiliser un lock pour éviter race conditions
+        if self._lock.locked():
             await inter.response.send_message("⏳ Vote déjà en cours...", ephemeral=True)
             return False
         return True
@@ -185,24 +187,24 @@ class ResultView(discord.ui.View):
     @discord.ui.button(label="✅ Team A gagne", emoji="🔵", style=discord.ButtonStyle.success)
     async def win_a(self, inter: Interaction, _):
         if not await self._guard(inter): return
-        await inter.response.defer()
-        self._processing = True
-        await self.cog._report(inter, "A")
-        try:
-            await inter.message.delete()
-        except Exception:
-            pass
+        async with self._lock:  # FIX: Lock pour éviter double traitement
+            await inter.response.defer()
+            await self.cog._report(inter, "A")
+            try:
+                await inter.message.delete()
+            except Exception as e:
+                logger.debug(f"Could not delete message: {e}")
 
     @discord.ui.button(label="✅ Team B gagne", emoji="🔴", style=discord.ButtonStyle.danger)
     async def win_b(self, inter: Interaction, _):
         if not await self._guard(inter): return
-        await inter.response.defer()
-        self._processing = True
-        await self.cog._report(inter, "B")
-        try:
-            await inter.message.delete()
-        except Exception:
-            pass
+        async with self._lock:  # FIX: Lock pour éviter double traitement
+            await inter.response.defer()
+            await self.cog._report(inter, "B")
+            try:
+                await inter.message.delete()
+            except Exception as e:
+                logger.debug(f"Could not delete message: {e}")
 
 
 class SideChoiceView(discord.ui.View):
@@ -366,7 +368,7 @@ class DraftCog(commands.Cog):
         series.status_msg_id = status.id
         await self._draft_loop(thread, series, status)
 
-    # ─── boucle bans/picks ─────────────────────────────────────────
+    # ─── boucle bans/picks (FIXÉE) ─────────────────────────────────
     async def _draft_loop(self, thread: discord.Thread, series: SeriesState, status_msg: discord.Message):
         TURN_TIME = 2 if len([uid for uid in series.team_a + series.team_b if uid > 0]) == 1 else 60
         ptr, taken = 0, set[str]()
@@ -398,24 +400,40 @@ class DraftCog(commands.Cog):
                             name = parts[1]
 
                     cand = canonicalize(name)
-                    try:
-                        await msg.delete()
-                    except discord.Forbidden:
-                        pass
 
+                    # FIX: Valider AVANT de supprimer le message pour éviter le délai perçu
                     if not cand:
                         sugg = difflib.get_close_matches(name.lower().replace(" ", ""), ALIASES.keys(), n=3, cutoff=0.6)
                         tip = f" Essaye: {', '.join(ALIASES[s] for s in sugg)}" if sugg else ""
+                        # Supprimer après validation
+                        try:
+                            await msg.delete()
+                        except (discord.Forbidden, discord.HTTPException):
+                            pass
                         await thread.send(f"❓ Champion inconnu: **{name}**.{tip}", delete_after=4)
                         continue
+                    
                     if cand in taken or cand in series.fearless_pool:
+                        # Supprimer après validation
+                        try:
+                            await msg.delete()
+                        except (discord.Forbidden, discord.HTTPException):
+                            pass
                         await thread.send("⚠️ Champion déjà pris / interdit.", delete_after=3)
                         continue
+                    
+                    # FIX: Champion valide ! Supprimer le message maintenant
+                    try:
+                        await msg.delete()
+                    except (discord.Forbidden, discord.HTTPException):
+                        pass
+                    
                     champ_id = cand
                     break
+                    
                 except asyncio.TimeoutError:
                     secs -= 1
-                    # maj plus “vivante” : toutes les 5s, puis chaque seconde sous 10s
+                    # maj plus "vivante" : toutes les 5s, puis chaque seconde sous 10s
                     if secs % 5 == 0 or secs <= 10:
                         try:
                             await status_msg.edit(embed=self._build_embed(series, secs, ptr, highlight=True))
@@ -528,6 +546,7 @@ class DraftCog(commands.Cog):
         )
         embed.add_field(name="Balance visuelle", value=f"```\n{chi_bar(p_blue)}\n```", inline=False)
         return embed
+    
     # ─── anti-spam hors capitaines ────────────────────────────────
     @commands.Cog.listener()
     async def on_message(self, msg: discord.Message):
@@ -537,18 +556,18 @@ class DraftCog(commands.Cog):
         if series and msg.author.id not in (series.captain_a, series.captain_b):
             try:
                 await msg.delete()
-            except discord.Forbidden:
+            except (discord.Forbidden, discord.HTTPException):
                 pass
 
     # ─── Report helper ────────────────────────────────────────────
     async def _report(self, inter: Interaction, side: str):
         if not isinstance(inter.channel, discord.Thread) or not inter.channel.name.startswith("draft-"):
-            return await inter.response.send_message("❌ À utiliser dans le thread draft.", ephemeral=True)
+            return await inter.followup.send("❌ À utiliser dans le thread draft.", ephemeral=True)
         series = self.series_by_thread.get(inter.channel.id)
         if not series:
-            return await inter.response.send_message("❌ Série inconnue.", ephemeral=True)
+            return await inter.followup.send("❌ Série inconnue.", ephemeral=True)
         if series.current_game.winner:
-            return await inter.response.send_message("⚠️ Partie déjà reportée.", ephemeral=True)
+            return await inter.followup.send("⚠️ Partie déjà reportée.", ephemeral=True)
 
         # enregistre le résultat
         series.current_game.winner = side
@@ -575,7 +594,10 @@ class DraftCog(commands.Cog):
                     view=cont_view,
                 )
                 await cont_view._done.wait()
-                await msg.delete()
+                try:
+                    await msg.delete()
+                except:
+                    pass
 
                 if cont_view.go_next:
                     series.bo = next_bo
@@ -584,7 +606,10 @@ class DraftCog(commands.Cog):
                     scv = SideChoiceView(loser_id=loser, captain_a_id=series.captain_a, captain_b_id=series.captain_b)
                     msg_sides = await inter.channel.send(f"🧭 <@{loser}> choisit les **sides** :", view=scv)
                     await scv._done.wait()
-                    await msg_sides.delete()
+                    try:
+                        await msg_sides.delete()
+                    except:
+                        pass
                     if scv.swap_chosen:
                         series.team_a, series.team_b = series.team_b, series.team_a
                         series.captain_a, series.captain_b = series.captain_b, series.captain_a
@@ -593,7 +618,10 @@ class DraftCog(commands.Cog):
                     rv = CaptainsReadyView(series.captain_a, series.captain_b)
                     msg_ready = await inter.channel.send("⏳ Ready check des capitaines…", view=rv)
                     await rv._done.wait()
-                    await msg_ready.delete()
+                    try:
+                        await msg_ready.delete()
+                    except:
+                        pass
 
                     series.start_new_game()
                     status = await inter.channel.send(embed=self._build_embed(series, 60, 0, highlight=True))
@@ -615,7 +643,10 @@ class DraftCog(commands.Cog):
                     view=cont_view,
                 )
                 await cont_view._done.wait()
-                await msg.delete()
+                try:
+                    await msg.delete()
+                except:
+                    pass
 
                 if not cont_view.go_next:
                     # Terminer sur match nul
@@ -633,7 +664,10 @@ class DraftCog(commands.Cog):
                 scv = SideChoiceView(loser_id=loser, captain_a_id=series.captain_a, captain_b_id=series.captain_b)
                 msg_sides = await inter.channel.send(f"🧭 <@{loser}> choisit les **sides** :", view=scv)
                 await scv._done.wait()
-                await msg_sides.delete()
+                try:
+                    await msg_sides.delete()
+                except:
+                    pass
                 if scv.swap_chosen:
                     series.team_a, series.team_b = series.team_b, series.team_a
                     series.captain_a, series.captain_b = series.captain_b, series.captain_a
@@ -642,7 +676,10 @@ class DraftCog(commands.Cog):
                 rv = CaptainsReadyView(series.captain_a, series.captain_b)
                 msg_ready = await inter.channel.send("⏳ Ready check des capitaines…", view=rv)
                 await rv._done.wait()
-                await msg_ready.delete()
+                try:
+                    await msg_ready.delete()
+                except:
+                    pass
 
                 series.start_new_game()
                 status = await inter.channel.send(embed=self._build_embed(series, 60, 0, highlight=True))
@@ -664,7 +701,10 @@ class DraftCog(commands.Cog):
                     view=cont_view,
                 )
                 await cont_view._done.wait()
-                await msg.delete()
+                try:
+                    await msg.delete()
+                except:
+                    pass
 
                 if cont_view.go_next:
                     series.bo = next_bo
@@ -672,7 +712,10 @@ class DraftCog(commands.Cog):
                     scv = SideChoiceView(loser_id=loser, captain_a_id=series.captain_a, captain_b_id=series.captain_b)
                     msg_sides = await inter.channel.send(f"🧭 <@{loser}> choisit les **sides** :", view=scv)
                     await scv._done.wait()
-                    await msg_sides.delete()
+                    try:
+                        await msg_sides.delete()
+                    except:
+                        pass
                     if scv.swap_chosen:
                         series.team_a, series.team_b = series.team_b, series.team_a
                         series.captain_a, series.captain_b = series.captain_b, series.captain_a
@@ -681,7 +724,10 @@ class DraftCog(commands.Cog):
                     rv = CaptainsReadyView(series.captain_a, series.captain_b)
                     msg_ready = await inter.channel.send("⏳ Ready check des capitaines…", view=rv)
                     await rv._done.wait()
-                    await msg_ready.delete()
+                    try:
+                        await msg_ready.delete()
+                    except:
+                        pass
 
                     series.start_new_game()
                     status = await inter.channel.send(embed=self._build_embed(series, 60, 0, highlight=True))
@@ -703,7 +749,10 @@ class DraftCog(commands.Cog):
                     view=cont_view,
                 )
                 await cont_view._done.wait()
-                await msg.delete()
+                try:
+                    await msg.delete()
+                except:
+                    pass
 
                 if not cont_view.go_next:
                     # Terminer sur match nul
@@ -721,7 +770,10 @@ class DraftCog(commands.Cog):
                 scv = SideChoiceView(loser_id=loser, captain_a_id=series.captain_a, captain_b_id=series.captain_b)
                 msg_sides = await inter.channel.send(f"🧭 <@{loser}> choisit les **sides** :", view=scv)
                 await scv._done.wait()
-                await msg_sides.delete()
+                try:
+                    await msg_sides.delete()
+                except:
+                    pass
                 if scv.swap_chosen:
                     series.team_a, series.team_b = series.team_b, series.team_a
                     series.captain_a, series.captain_b = series.captain_b, series.captain_a
@@ -730,7 +782,10 @@ class DraftCog(commands.Cog):
                 rv = CaptainsReadyView(series.captain_a, series.captain_b)
                 msg_ready = await inter.channel.send("⏳ Ready check des capitaines…", view=rv)
                 await rv._done.wait()
-                await msg_ready.delete()
+                try:
+                    await msg_ready.delete()
+                except:
+                    pass
 
                 series.start_new_game()
                 status = await inter.channel.send(embed=self._build_embed(series, 60, 0, highlight=True))
@@ -759,7 +814,10 @@ class DraftCog(commands.Cog):
         scv = SideChoiceView(loser_id=loser, captain_a_id=series.captain_a, captain_b_id=series.captain_b)
         msg_sides = await inter.channel.send(f"🧭 <@{loser}> choisit les **sides** :", view=scv)
         await scv._done.wait()
-        await msg_sides.delete()
+        try:
+            await msg_sides.delete()
+        except:
+            pass
         if scv.swap_chosen:
             series.team_a, series.team_b = series.team_b, series.team_a
             series.captain_a, series.captain_b = series.captain_b, series.captain_a
@@ -769,7 +827,10 @@ class DraftCog(commands.Cog):
         rv = CaptainsReadyView(series.captain_a, series.captain_b)
         msg_ready = await inter.channel.send("⏳ Ready check des capitaines…", view=rv)
         await rv._done.wait()
-        await msg_ready.delete()
+        try:
+            await msg_ready.delete()
+        except:
+            pass
 
         # nouvelle game
         series.start_new_game()
