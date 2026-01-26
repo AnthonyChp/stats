@@ -47,6 +47,16 @@ class Match(Base):
     timestamp = Column(DateTime, nullable=False)
 
 
+class MutedUser(Base):
+    """Stocke les rôles retirés lors d'un mute pour pouvoir les restaurer."""
+    __tablename__ = 'muted_users'
+    discord_id = Column(String, primary_key=True, index=True)
+    role_ids = Column(String, nullable=False)  # IDs séparés par des virgules
+    muted_at = Column(DateTime, nullable=False)
+    muted_by = Column(String, nullable=False)  # Discord ID du modérateur
+    reason = Column(String, nullable=True)
+
+
 def init_db():
     """Créer les tables si elles n'existent pas encore."""
     """Créer les tables si elles n'existent pas encore."""
