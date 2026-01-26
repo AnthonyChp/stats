@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     CUSTOM_GAME_CHANNEL_ID: int  # salon où la commande est utilisable
     JOIN_PING_ROLE_ID: Optional[int] = None  # rôle à ping pour rejoindre les customs
 
+    # — Modération —
+    MODERATION_CHANNEL_ID: int  # salon où s'affichent les reports/mutes
+    MUTE_ROLE_ID: int  # rôle "mute" à attribuer
+
     # — Redis —
     REDIS_URL: str
 

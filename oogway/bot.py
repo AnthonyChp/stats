@@ -47,6 +47,7 @@ EXTENSIONS: list[str] = [
     "oogway.cogs.draft",
     "oogway.cogs.profile",
     "oogway.cogs.rdv",
+    "oogway.cogs.moderation",
 ]
 
 
