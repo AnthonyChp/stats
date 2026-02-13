@@ -5,7 +5,7 @@ import datetime as dt
 import hashlib
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Set, Tuple
 
 import discord
 from discord import app_commands
@@ -21,35 +21,41 @@ WORD_LENGTH = 5
 MAX_ATTEMPTS = 6
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Chargement de la liste de mots
+# Chargement des listes de mots
 # ──────────────────────────────────────────────────────────────────────────────
 
-_WORDS_FILE = Path(__file__).resolve().parent.parent / "data" / "oogle_words.txt"
+_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+_SOLUTIONS_FILE = _DATA_DIR / "oogle_words.txt"    # ~600 mots courants (solutions)
+_ACCEPT_FILE = _DATA_DIR / "oogle_accept.txt"       # ~1700+ mots acceptés en guess
 
 
-def _load_words() -> List[str]:
-    """Charge les mots de 5 lettres depuis le fichier, en minuscules."""
+def _load_word_file(path: Path) -> List[str]:
     words: List[str] = []
-    with open(_WORDS_FILE, encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             w = line.strip().lower()
             if len(w) == WORD_LENGTH and w.isalpha():
                 words.append(w)
-    if not words:
-        raise RuntimeError("Aucun mot valide trouvé dans oogle_words.txt")
     return words
 
 
-WORDS = _load_words()
-WORD_SET = set(WORDS)
+SOLUTIONS = _load_word_file(_SOLUTIONS_FILE)
+if not SOLUTIONS:
+    raise RuntimeError("Aucun mot valide trouvé dans oogle_words.txt")
+
+# L'ensemble de mots acceptés = solutions + accept (union)
+_accept_extra = _load_word_file(_ACCEPT_FILE)
+ACCEPT_SET: Set[str] = set(SOLUTIONS) | set(_accept_extra)
+
+log.info("OOGLE: %d solutions, %d mots acceptés au total", len(SOLUTIONS), len(ACCEPT_SET))
 
 
 def get_daily_word() -> str:
     """Renvoie le mot du jour (déterministe, basé sur la date Paris)."""
     today = dt.datetime.now(TZ_PARIS).strftime("%Y-%m-%d")
     h = hashlib.sha256(f"oogle-{today}".encode()).hexdigest()
-    idx = int(h, 16) % len(WORDS)
-    return WORDS[idx]
+    idx = int(h, 16) % len(SOLUTIONS)
+    return SOLUTIONS[idx]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -59,6 +65,16 @@ def get_daily_word() -> str:
 # 🟩 = bonne lettre, bonne position
 # 🟨 = bonne lettre, mauvaise position
 # ⬛ = lettre absente
+
+LETTER_EMOJIS = {
+    "A": "🇦", "B": "🇧", "C": "🇨", "D": "🇩", "E": "🇪",
+    "F": "🇫", "G": "🇬", "H": "🇭", "I": "🇮", "J": "🇯",
+    "K": "🇰", "L": "🇱", "M": "🇲", "N": "🇳", "O": "🇴",
+    "P": "🇵", "Q": "🇶", "R": "🇷", "S": "🇸", "T": "🇹",
+    "U": "🇺", "V": "🇻", "W": "🇼", "X": "🇽", "Y": "🇾",
+    "Z": "🇿",
+}
+
 
 def evaluate_guess(guess: str, target: str) -> List[str]:
     """Renvoie une liste de 5 emojis correspondant à chaque lettre."""
@@ -82,12 +98,52 @@ def evaluate_guess(guess: str, target: str) -> List[str]:
     return result
 
 
-def format_grid(attempts: List[Tuple[str, List[str]]]) -> str:
-    """Formate la grille d'emojis pour l'affichage."""
+def format_grid(attempts: List[Tuple[str, List[str]]], show_words: bool = True) -> str:
+    """Formate la grille d'emojis pour l'affichage.
+    Si show_words=True, affiche aussi les lettres à côté."""
     lines = []
-    for _word, emojis in attempts:
-        lines.append("".join(emojis))
+    for word, emojis in attempts:
+        emoji_row = "".join(emojis)
+        if show_words:
+            spaced = "  ".join(c.upper() for c in word)
+            lines.append(f"{emoji_row}  `{spaced}`")
+        else:
+            lines.append(emoji_row)
     return "\n".join(lines)
+
+
+def build_keyboard(attempts: List[Tuple[str, List[str]]]) -> str:
+    """Construit un clavier visuel montrant l'état de chaque lettre testée."""
+    # Priorité : vert > jaune > noir
+    letter_status: Dict[str, str] = {}
+    for word, emojis in attempts:
+        for i, ch in enumerate(word):
+            status = emojis[i]
+            prev = letter_status.get(ch)
+            if prev == "🟩":
+                continue  # vert = on garde
+            if status == "🟩" or (status == "🟨" and prev != "🟩"):
+                letter_status[ch] = status
+            elif ch not in letter_status:
+                letter_status[ch] = status
+
+    rows = ["azertyuiop", "qsdfghjklm", "wxcvbn"]
+    result = []
+    for row in rows:
+        chars = []
+        for ch in row:
+            if ch in letter_status:
+                st = letter_status[ch]
+                if st == "🟩":
+                    chars.append(f"**{ch.upper()}**")
+                elif st == "🟨":
+                    chars.append(f"*{ch.upper()}*")
+                else:
+                    chars.append(f"~~{ch.upper()}~~")
+            else:
+                chars.append(ch.upper())
+        result.append("  ".join(chars))
+    return "\n".join(result)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -137,60 +193,7 @@ class GuessModal(discord.ui.Modal, title="OOGLE – Devine le mot"):
         self.cog = cog
 
     async def on_submit(self, interaction: discord.Interaction):
-        guess = self.mot.value.strip().lower()
-
-        # Validation
-        if len(guess) != WORD_LENGTH or not guess.isalpha():
-            return await interaction.response.send_message(
-                f"⛔ Le mot doit contenir exactement {WORD_LENGTH} lettres.", ephemeral=True
-            )
-
-        if guess not in WORD_SET:
-            return await interaction.response.send_message(
-                "⛔ Ce mot n'est pas dans le dictionnaire OOGLE.", ephemeral=True
-            )
-
-        game = get_or_create_game(interaction.user.id)
-
-        if game.finished:
-            return await interaction.response.send_message(
-                "Tu as déjà terminé l'OOGLE du jour ! Reviens demain 🕛", ephemeral=True
-            )
-
-        # Évaluer le guess
-        emojis = evaluate_guess(guess, game.target)
-        game.attempts.append((guess, emojis))
-
-        won = guess == game.target
-        lost = len(game.attempts) >= MAX_ATTEMPTS and not won
-
-        if won or lost:
-            game.finished = True
-            game.won = won
-
-        # Construire la réponse éphémère avec la grille actuelle
-        grid = format_grid(game.attempts)
-        remaining = MAX_ATTEMPTS - len(game.attempts)
-
-        if won:
-            response = f"**OOGLE** 🎉 Bravo !\n\n{grid}\n\n✅ Trouvé en **{len(game.attempts)}/{MAX_ATTEMPTS}**"
-        elif lost:
-            response = (
-                f"**OOGLE** 💀 Perdu !\n\n{grid}\n\n"
-                f"Le mot était : **{game.target.upper()}**"
-            )
-        else:
-            response = (
-                f"**OOGLE** – Essai {len(game.attempts)}/{MAX_ATTEMPTS}\n\n"
-                f"{grid}\n\n"
-                f"Il te reste **{remaining}** essai{'s' if remaining > 1 else ''}."
-            )
-
-        await interaction.response.send_message(response, ephemeral=True)
-
-        # Si la partie est terminée, poster le résultat dans le salon OOGLE
-        if game.finished:
-            await self.cog.post_result(interaction, game)
+        await self.cog.process_guess(interaction, self.mot.value)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -201,45 +204,18 @@ class OogleCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="oogle", description="Jouer à OOGLE – le Wordle français du jour")
-    async def oogle(self, interaction: discord.Interaction):
-        game = get_or_create_game(interaction.user.id)
-
-        if game.finished:
-            return await interaction.response.send_message(
-                "Tu as déjà terminé l'OOGLE du jour ! Reviens demain 🕛", ephemeral=True
-            )
-
-        # Si le joueur a déjà des essais, montrer la grille avant le modal
-        if game.attempts:
-            grid = format_grid(game.attempts)
-            remaining = MAX_ATTEMPTS - len(game.attempts)
-            hint = (
-                f"**OOGLE** – Essai {len(game.attempts)}/{MAX_ATTEMPTS}\n\n"
-                f"{grid}\n\n"
-                f"Il te reste **{remaining}** essai{'s' if remaining > 1 else ''}.\n"
-                f"Utilise `/oogle` pour proposer un nouveau mot."
-            )
-            await interaction.response.send_message(hint, ephemeral=True)
-            # Envoyer le modal via followup n'est pas possible,
-            # donc on informe juste et le joueur relance /oogle
-            return
-
-        await interaction.response.send_modal(GuessModal(self))
-
-    @app_commands.command(name="oogle-guess", description="Proposer un mot pour l'OOGLE du jour")
-    @app_commands.describe(mot="Ton mot de 5 lettres")
-    async def oogle_guess(self, interaction: discord.Interaction, mot: str):
-        guess = mot.strip().lower()
+    async def process_guess(self, interaction: discord.Interaction, raw_mot: str):
+        """Logique commune de traitement d'un guess (modal ou commande)."""
+        guess = raw_mot.strip().lower()
 
         if len(guess) != WORD_LENGTH or not guess.isalpha():
             return await interaction.response.send_message(
                 f"⛔ Le mot doit contenir exactement {WORD_LENGTH} lettres.", ephemeral=True
             )
 
-        if guess not in WORD_SET:
+        if guess not in ACCEPT_SET:
             return await interaction.response.send_message(
-                "⛔ Ce mot n'est pas dans le dictionnaire OOGLE.", ephemeral=True
+                "⛔ Ce mot n'est pas dans le dictionnaire OOGLE. Essaie un autre mot !", ephemeral=True
             )
 
         game = get_or_create_game(interaction.user.id)
@@ -249,6 +225,7 @@ class OogleCog(commands.Cog):
                 "Tu as déjà terminé l'OOGLE du jour ! Reviens demain 🕛", ephemeral=True
             )
 
+        # Évaluer
         emojis = evaluate_guess(guess, game.target)
         game.attempts.append((guess, emojis))
 
@@ -259,27 +236,57 @@ class OogleCog(commands.Cog):
             game.finished = True
             game.won = won
 
-        grid = format_grid(game.attempts)
+        # Construire la réponse
+        grid = format_grid(game.attempts, show_words=True)
+        keyboard = build_keyboard(game.attempts)
         remaining = MAX_ATTEMPTS - len(game.attempts)
 
         if won:
-            response = f"**OOGLE** 🎉 Bravo !\n\n{grid}\n\n✅ Trouvé en **{len(game.attempts)}/{MAX_ATTEMPTS}**"
+            response = (
+                f"**OOGLE** 🎉 Bravo !\n\n"
+                f"{grid}\n\n"
+                f"✅ Trouvé en **{len(game.attempts)}/{MAX_ATTEMPTS}**\n\n"
+                f"{keyboard}"
+            )
         elif lost:
             response = (
-                f"**OOGLE** 💀 Perdu !\n\n{grid}\n\n"
-                f"Le mot était : **{game.target.upper()}**"
+                f"**OOGLE** 💀 Perdu !\n\n"
+                f"{grid}\n\n"
+                f"Le mot était : **{game.target.upper()}**\n\n"
+                f"{keyboard}"
             )
         else:
             response = (
                 f"**OOGLE** – Essai {len(game.attempts)}/{MAX_ATTEMPTS}\n\n"
                 f"{grid}\n\n"
-                f"Il te reste **{remaining}** essai{'s' if remaining > 1 else ''}."
+                f"Il te reste **{remaining}** essai{'s' if remaining > 1 else ''}.\n\n"
+                f"{keyboard}"
             )
 
         await interaction.response.send_message(response, ephemeral=True)
 
         if game.finished:
             await self.post_result(interaction, game)
+
+    @app_commands.command(name="oogle", description="Jouer à OOGLE – le Wordle français du jour")
+    @app_commands.describe(mot="Ton mot de 5 lettres (optionnel, ouvre un popup sinon)")
+    async def oogle(self, interaction: discord.Interaction, mot: str = None):
+        game = get_or_create_game(interaction.user.id)
+
+        if game.finished:
+            grid = format_grid(game.attempts, show_words=True)
+            score = f"{len(game.attempts)}/{MAX_ATTEMPTS}" if game.won else f"X/{MAX_ATTEMPTS}"
+            return await interaction.response.send_message(
+                f"Tu as déjà terminé l'OOGLE du jour ! **{score}**\n\n{grid}\n\nReviens demain 🕛",
+                ephemeral=True,
+            )
+
+        # Si un mot est fourni en paramètre, on le traite directement
+        if mot:
+            return await self.process_guess(interaction, mot)
+
+        # Sinon on ouvre le modal
+        await interaction.response.send_modal(GuessModal(self))
 
     async def post_result(self, interaction: discord.Interaction, game: GameState):
         """Poste le résultat dans le salon OOGLE (avatar + date + score)."""
@@ -294,7 +301,8 @@ class OogleCog(commands.Cog):
         user = interaction.user
         today = dt.datetime.now(TZ_PARIS).strftime("%d/%m/%Y")
         score = f"{len(game.attempts)}/{MAX_ATTEMPTS}" if game.won else f"X/{MAX_ATTEMPTS}"
-        grid = format_grid(game.attempts)
+        # Pour le résultat public, on ne montre PAS les mots (anti-spoil)
+        grid = format_grid(game.attempts, show_words=False)
 
         embed = discord.Embed(
             title=f"OOGLE — {today}",
