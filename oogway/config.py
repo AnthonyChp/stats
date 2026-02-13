@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     MODERATION_CHANNEL_ID: int  # salon où s'affichent les reports/mutes
     MUTE_ROLE_ID: int  # rôle "mute" à attribuer
 
+    # — Oogle (Wordle FR) —
+    OOGLE_CHANNEL_ID: int  # salon où poster les résultats Oogle
+
     # — Redis —
     REDIS_URL: str
 
