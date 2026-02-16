@@ -255,9 +255,37 @@ class OogleCog(commands.Cog):
         self.db = OogleDatabase(settings.DB_URL.replace("sqlite:///", ""))
         self.leaderboard_message_id: Optional[int] = None
         
+        # Charger les parties du jour depuis la base de données
+        self._restore_today_games()
+        
         # Démarrer les tâches
         self.update_leaderboard.start()
         self.daily_notification.start()
+
+    def _restore_today_games(self):
+        """Restaure les parties du jour depuis la base de données."""
+        today = _today_key()
+        daily_word = get_daily_word()
+        
+        # Récupérer toutes les parties du jour depuis la DB
+        games_today = self.db.get_games_by_date(today)
+        
+        for game_data in games_today:
+            user_id = game_data['user_id']
+            attempts = game_data['attempts']
+            won = game_data['won']
+            
+            # Recréer l'état du jeu
+            key = (today, user_id)
+            game_state = GameState(daily_word)
+            game_state.finished = True
+            game_state.won = won
+            
+            # On ne peut pas reconstruire les tentatives exactes, 
+            # mais on marque juste le jeu comme terminé
+            GAMES[key] = game_state
+        
+        log.info(f"♻️ {len(games_today)} parties du jour restaurées depuis la base")
 
     def cog_unload(self):
         self.update_leaderboard.cancel()
@@ -378,10 +406,34 @@ class OogleCog(commands.Cog):
         new_status = not current_status
         self.db.set_notification(interaction.user.id, new_status)
         
+        # Gérer le rôle si configuré
+        if settings.OOGLE_ROLE_ID and isinstance(interaction.user, discord.Member):
+            try:
+                role = interaction.guild.get_role(settings.OOGLE_ROLE_ID)
+                if not role:
+                    log.warning(f"Rôle OOGLE {settings.OOGLE_ROLE_ID} introuvable")
+                else:
+                    if new_status:
+                        # Activer : donner le rôle
+                        if role not in interaction.user.roles:
+                            await interaction.user.add_roles(role, reason="Notifications OOGLE activées")
+                    else:
+                        # Désactiver : retirer le rôle
+                        if role in interaction.user.roles:
+                            await interaction.user.remove_roles(role, reason="Notifications OOGLE désactivées")
+            except discord.Forbidden:
+                log.error("Permissions insuffisantes pour gérer les rôles OOGLE")
+            except Exception as e:
+                log.error(f"Erreur lors de la gestion du rôle OOGLE : {e}")
+        
         if new_status:
             msg = "✅ Notifications activées ! Tu seras pingé chaque jour à 8h pour le nouveau OOGLE."
+            if settings.OOGLE_ROLE_ID:
+                msg += f"\n🎭 Le rôle <@&{settings.OOGLE_ROLE_ID}> t'a été attribué."
         else:
             msg = "🔕 Notifications désactivées. Tu ne seras plus pingé pour les nouveaux OOGLE."
+            if settings.OOGLE_ROLE_ID:
+                msg += f"\n🎭 Le rôle <@&{settings.OOGLE_ROLE_ID}> t'a été retiré."
         
         await interaction.response.send_message(msg, ephemeral=True)
 
