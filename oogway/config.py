@@ -28,7 +28,8 @@ class Settings(BaseSettings):
     MUTE_ROLE_ID: int  # rôle "mute" à attribuer
 
     # — Oogle (Wordle FR) —
-    OOGLE_CHANNEL_ID: int  # salon où poster les résultats Oogle
+    OOGLE_CHANNEL_ID: int  # salon où poster les notifications quotidiennes
+    OOGLE_LEADERBOARD_CHANNEL_ID: int  # salon du leaderboard OOGLE (nouveau)
 
     # — Redis —
     REDIS_URL: str
