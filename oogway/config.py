@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     # — Oogle (Wordle FR) —
     OOGLE_CHANNEL_ID: int  # salon où poster les notifications quotidiennes
     OOGLE_LEADERBOARD_CHANNEL_ID: int  # salon du leaderboard OOGLE (nouveau)
+    OOGLE_ROLE_ID: Optional[int] = None  # rôle à donner pour les notifications OOGLE
+
 
     # — Redis —
     REDIS_URL: str
