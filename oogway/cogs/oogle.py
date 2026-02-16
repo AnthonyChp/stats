@@ -6,7 +6,6 @@ import hashlib
 import logging
 from pathlib import Path
 from typing import Dict, List, Set, Tuple, Optional
-import json
 
 import discord
 from discord import app_commands
@@ -27,12 +26,15 @@ MAX_ATTEMPTS = 6
 # ──────────────────────────────────────────────────────────────────────────────
 
 _DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+
+# Tentative 1: Fichiers manuels (si ils existent)
 _SOLUTIONS_FILE = _DATA_DIR / "oogle_words.txt"
 _ACCEPT_FILE = _DATA_DIR / "oogle_accept.txt"
 
-
 def _load_word_file(path: Path) -> List[str]:
     words: List[str] = []
+    if not path.exists():
+        return words
     with open(path, encoding="utf-8") as f:
         for line in f:
             w = line.strip().lower()
@@ -41,12 +43,32 @@ def _load_word_file(path: Path) -> List[str]:
     return words
 
 
+# Essayer de charger les fichiers manuels d'abord
 SOLUTIONS = _load_word_file(_SOLUTIONS_FILE)
-if not SOLUTIONS:
-    raise RuntimeError("Aucun mot valide trouvé dans oogle_words.txt")
-
 _accept_extra = _load_word_file(_ACCEPT_FILE)
-ACCEPT_SET: Set[str] = set(SOLUTIONS) | set(_accept_extra)
+
+# Si les fichiers manuels n'existent pas, utiliser le téléchargement automatique
+if not SOLUTIONS:
+    log.info("📥 Fichiers manuels non trouvés, téléchargement automatique des dictionnaires...")
+    try:
+        from oogway.oogle_word_fetcher import load_or_fetch_words
+        
+        SOLUTIONS, ACCEPT_SET = load_or_fetch_words(
+            cache_dir=_DATA_DIR,
+            solutions_file="oogle_words_auto.txt",
+            accept_file="oogle_accept_auto.txt"
+        )
+        log.info("✅ Dictionnaires téléchargés automatiquement")
+    except Exception as e:
+        log.error(f"❌ Erreur lors du téléchargement automatique: {e}")
+        raise RuntimeError(
+            "Impossible de charger les dictionnaires. "
+            "Placez les fichiers oogle_words.txt et oogle_accept.txt dans le dossier data/, "
+            "ou vérifiez votre connexion internet pour le téléchargement automatique."
+        ) from e
+else:
+    ACCEPT_SET: Set[str] = set(SOLUTIONS) | set(_accept_extra)
+    log.info("✅ Fichiers manuels chargés")
 
 log.info("OOGLE: %d solutions, %d mots acceptés au total", len(SOLUTIONS), len(ACCEPT_SET))
 
@@ -246,21 +268,18 @@ class OogleCog(commands.Cog):
         guess = raw_mot.strip().lower()
 
         if len(guess) != WORD_LENGTH or not guess.isalpha():
-            return await interaction.response.send_message(
-                f"⛔ Le mot doit contenir exactement {WORD_LENGTH} lettres.", ephemeral=True
-            )
+            msg = f"⛔ Le mot doit contenir exactement {WORD_LENGTH} lettres."
+            return await interaction.response.send_message(msg, ephemeral=True)
 
         if guess not in ACCEPT_SET:
-            return await interaction.response.send_message(
-                "⛔ Ce mot n'est pas dans le dictionnaire OOGLE. Essaie un autre mot !", ephemeral=True
-            )
+            msg = "⛔ Ce mot n'est pas dans le dictionnaire OOGLE. Essaie un autre mot !"
+            return await interaction.response.send_message(msg, ephemeral=True)
 
         game = get_or_create_game(interaction.user.id)
 
         if game.finished:
-            return await interaction.response.send_message(
-                "Tu as déjà terminé l'OOGLE du jour ! Reviens demain 🕛", ephemeral=True
-            )
+            msg = "Tu as déjà terminé l'OOGLE du jour ! Reviens demain 🕛"
+            return await interaction.response.send_message(msg, ephemeral=True)
 
         # Évaluer
         emojis = evaluate_guess(guess, game.target)
@@ -293,25 +312,26 @@ class OogleCog(commands.Cog):
             streak_info = f"🔥 Série : **{stats['current_streak']}**" if stats else ""
             
             response = (
-                f"**OOGLE** 🎉 Bravo !\n\n"
-                f"{grid}\n\n"
-                f"✅ Trouvé en **{len(game.attempts)}/{MAX_ATTEMPTS}**\n"
-                f"{streak_info}\n\n"
-                f"{keyboard}"
+                "**OOGLE** 🎉 Bravo !\n\n"
+                + grid + "\n\n"
+                + f"✅ Trouvé en **{len(game.attempts)}/{MAX_ATTEMPTS}**\n"
+                + streak_info + "\n\n"
+                + keyboard
             )
         elif lost:
             response = (
-                f"**OOGLE** 💀 Perdu !\n\n"
-                f"{grid}\n\n"
-                f"Le mot était : **{game.target.upper()}**\n\n"
-                f"{keyboard}"
+                "**OOGLE** 💀 Perdu !\n\n"
+                + grid + "\n\n"
+                + f"Le mot était : **{game.target.upper()}**\n\n"
+                + keyboard
             )
         else:
+            plural = 's' if remaining > 1 else ''
             response = (
                 f"**OOGLE** – Essai {len(game.attempts)}/{MAX_ATTEMPTS}\n\n"
-                f"{grid}\n\n"
-                f"Il te reste **{remaining}** essai{'s' if remaining > 1 else ''}.\n\n"
-                f"{keyboard}"
+                + grid + "\n\n"
+                + f"Il te reste **{remaining}** essai{plural}.\n\n"
+                + keyboard
             )
 
         await interaction.response.send_message(response, ephemeral=True)
@@ -333,16 +353,19 @@ class OogleCog(commands.Cog):
             stats_text = ""
             if stats:
                 stats_text = (
-                    f"\n📊 **Tes stats**\n"
-                    f"🎯 Victoires : {stats['total_wins']}/{stats['total_games']} ({stats['win_rate']:.1f}%)\n"
-                    f"🔥 Série actuelle : {stats['current_streak']}\n"
-                    f"⚡ Moyenne : {stats['avg_attempts']:.2f} essais"
+                    "\n📊 **Tes stats**\n"
+                    + f"🎯 Victoires : {stats['total_wins']}/{stats['total_games']} ({stats['win_rate']:.1f}%)\n"
+                    + f"🔥 Série actuelle : {stats['current_streak']}\n"
+                    + f"⚡ Moyenne : {stats['avg_attempts']:.2f} essais"
                 )
             
-            return await interaction.response.send_message(
-                f"Tu as déjà terminé l'OOGLE du jour ! **{score}**\n\n{grid}{stats_text}\n\nReviens demain 🕛",
-                ephemeral=True,
+            msg = (
+                f"Tu as déjà terminé l'OOGLE du jour ! **{score}**\n\n"
+                + grid
+                + stats_text
+                + "\n\nReviens demain 🕛"
             )
+            return await interaction.response.send_message(msg, ephemeral=True)
 
         if mot:
             return await self.process_guess(interaction, mot)
@@ -368,11 +391,9 @@ class OogleCog(commands.Cog):
         stats = self.db.get_user_stats(target_user.id)
         
         if not stats:
-            return await interaction.response.send_message(
-                f"❌ {'Tu n\'as' if target_user == interaction.user else f'{target_user.mention} n\'a'} "
-                f"pas encore joué à OOGLE !",
-                ephemeral=True
-            )
+            prefix = "Tu n'as" if target_user == interaction.user else f"{target_user.mention} n'a"
+            msg = f"❌ {prefix} pas encore joué à OOGLE !"
+            return await interaction.response.send_message(msg, ephemeral=True)
         
         # Créer un histogramme de distribution
         dist = stats['distribution']
@@ -391,21 +412,15 @@ class OogleCog(commands.Cog):
         )
         embed.set_thumbnail(url=target_user.display_avatar.url)
         
-        embed.add_field(
-            name="🎮 Parties",
-            value=f"**{stats['total_games']}** jouées\n**{stats['total_wins']}** gagnées",
-            inline=True
-        )
-        embed.add_field(
-            name="📈 Performance",
-            value=f"**{stats['win_rate']:.1f}%** de victoires\n**{stats['avg_attempts']:.2f}** essais moy.",
-            inline=True
-        )
-        embed.add_field(
-            name="🔥 Séries",
-            value=f"**{stats['current_streak']}** actuelle\n**{stats['max_streak']}** record",
-            inline=True
-        )
+        games_text = f"**{stats['total_games']}** jouées\n**{stats['total_wins']}** gagnées"
+        embed.add_field(name="🎮 Parties", value=games_text, inline=True)
+        
+        perf_text = f"**{stats['win_rate']:.1f}%** de victoires\n**{stats['avg_attempts']:.2f}** essais moy."
+        embed.add_field(name="📈 Performance", value=perf_text, inline=True)
+        
+        streak_text = f"**{stats['current_streak']}** actuelle\n**{stats['max_streak']}** record"
+        embed.add_field(name="🔥 Séries", value=streak_text, inline=True)
+        
         embed.add_field(
             name="📊 Distribution des victoires",
             value="\n".join(histogram),
@@ -429,7 +444,8 @@ class OogleCog(commands.Cog):
                 user = await self.bot.fetch_user(user_id) if guild else None
                 name = user.mention if user else f"User #{user_id}"
                 medal = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else f"`{i}.`"
-                embed.description += f"{medal} {name} — **{streak}** jour{'s' if streak > 1 else ''}\n"
+                plural = 's' if streak > 1 else ''
+                embed.description += f"{medal} {name} — **{streak}** jour{plural}\n"
         
         elif page == "records":
             data = self.db.get_leaderboard_max_streaks(10)
@@ -438,7 +454,8 @@ class OogleCog(commands.Cog):
                 user = await self.bot.fetch_user(user_id) if guild else None
                 name = user.mention if user else f"User #{user_id}"
                 medal = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else f"`{i}.`"
-                embed.description += f"{medal} {name} — **{max_streak}** jour{'s' if max_streak > 1 else ''}\n"
+                plural = 's' if max_streak > 1 else ''
+                embed.description += f"{medal} {name} — **{max_streak}** jour{plural}\n"
         
         elif page == "avg":
             data = self.db.get_leaderboard_best_avg(10, min_games=5)
@@ -456,7 +473,8 @@ class OogleCog(commands.Cog):
                 user = await self.bot.fetch_user(user_id) if guild else None
                 name = user.mention if user else f"User #{user_id}"
                 medal = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else f"`{i}.`"
-                embed.description += f"{medal} {name} — **{wins}** victoire{'s' if wins > 1 else ''}\n"
+                plural = 's' if wins > 1 else ''
+                embed.description += f"{medal} {name} — **{wins}** victoire{plural}\n"
         
         elif page == "winrate":
             data = self.db.get_leaderboard_win_rate(10, min_games=5)
@@ -542,4 +560,3 @@ class OogleCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(OogleCog(bot))
-
