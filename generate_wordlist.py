@@ -84,7 +84,7 @@ def calculate_word_score(word: str) -> float:
 def download_grammalecte_lexique(cache_dir: Path, force: bool = False) -> Path:
     """Télécharge le lexique Grammalecte."""
     cache_dir.mkdir(parents=True, exist_ok=True)
-    lexique_path = cache_dir / "lexique-dicollecte-fr.txt"
+    lexique_path = cache_dir / "lexique-grammalecte-fr-v7.7.txt"
     
     if lexique_path.exists() and not force:
         log.info(f"📂 Utilisation du cache : {lexique_path}")
@@ -102,19 +102,22 @@ def download_grammalecte_lexique(cache_dir: Path, force: bool = False) -> Path:
         
         with zipfile.ZipFile(BytesIO(response.content)) as zip_file:
             file_list = zip_file.namelist()
-            log.info(f"   Fichiers trouvés : {', '.join(file_list[:3])}...")
+            log.info(f"   Fichiers dans le ZIP : {file_list}")
             
+            # Chercher le fichier .txt qui contient "lexique" dans son nom
             lexique_file = None
             for filename in file_list:
                 if filename.endswith('.txt') and 'lexique' in filename.lower():
                     lexique_file = filename
+                    log.info(f"   Fichier lexique trouvé : {lexique_file}")
                     break
             
             if not lexique_file:
+                # Prendre le premier fichier .txt
                 lexique_file = next((f for f in file_list if f.endswith('.txt')), None)
             
             if not lexique_file:
-                raise RuntimeError(f"Aucun fichier lexique trouvé dans le ZIP")
+                raise RuntimeError(f"Aucun fichier lexique trouvé dans le ZIP. Fichiers disponibles : {file_list}")
             
             log.info(f"   Extraction de : {lexique_file}")
             content = zip_file.read(lexique_file)
@@ -127,7 +130,7 @@ def download_grammalecte_lexique(cache_dir: Path, force: bool = False) -> Path:
         
     except requests.exceptions.RequestException as e:
         log.error(f"❌ Erreur lors du téléchargement : {e}")
-        log.error(f"💡 Astuce : L'URL a peut-être changé. Vérifiez https://grammalecte.net/")
+        log.error(f"💡 Vérifiez https://grammalecte.net/#other_downloads")
         raise
     except zipfile.BadZipFile as e:
         log.error(f"❌ Erreur lors de l'extraction du ZIP : {e}")
