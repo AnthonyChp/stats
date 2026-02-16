@@ -365,6 +365,25 @@ class OogleCog(commands.Cog):
         await interaction.response.send_message(response, ephemeral=True)
 
         if game.finished:
+            # Construire la grille publique (sans révéler les mots)
+            public_grid = format_grid(game.attempts, show_words=False)
+
+            score = (
+                f"{len(game.attempts)}/{MAX_ATTEMPTS}"
+                if game.won
+                else f"X/{MAX_ATTEMPTS}"
+            )
+        
+            share_message = (
+                f"🧩 **OOGLE {_today_key()}**\n"
+                f"{interaction.user.display_name} — {score}\n\n"
+                f"{public_grid}"
+            )
+        
+            # Envoyer dans le salon public (si c'est un salon texte)
+            if interaction.channel and isinstance(interaction.channel, discord.TextChannel):
+                await interaction.channel.send(share_message)
+        
             # Mettre à jour le leaderboard
             await self.update_leaderboard_message()
 
@@ -612,3 +631,4 @@ class OogleCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(OogleCog(bot))
+
