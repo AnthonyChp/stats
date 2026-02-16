@@ -138,7 +138,7 @@ def download_grammalecte_lexique(cache_dir: Path, force: bool = False) -> Path:
 
 
 def parse_grammalecte_lexique(lexique_path: Path) -> Set[str]:
-    """Parse le fichier lexique de Grammalecte."""
+    """Parse le fichier lexique de Grammalecte (format TSV)."""
     log.info(f"📖 Lecture du lexique : {lexique_path}")
     
     valid_words = set()
@@ -162,16 +162,23 @@ def parse_grammalecte_lexique(lexique_path: Path) -> Set[str]:
     for line in content.split('\n'):
         total_lines += 1
         
-        if not line.strip() or line.startswith('#'):
+        # Ignorer les lignes vides, commentaires et en-têtes
+        if not line.strip() or line.startswith('#') or line.startswith('id\t'):
             continue
         
+        # Format TSV : colonnes séparées par des tabulations
         parts = line.strip().split('\t')
-        if not parts:
+        
+        # La 3ème colonne (index 2) contient le mot "Flexion"
+        if len(parts) < 3:
             continue
         
-        original_word = parts[0].strip()
+        original_word = parts[2].strip()
+        
+        # Normaliser : minuscules, sans accents
         normalized_word = remove_accents(original_word.lower())
         
+        # Vérifier si valide
         if is_valid_word(normalized_word, original_word):
             valid_words.add(normalized_word)
     
