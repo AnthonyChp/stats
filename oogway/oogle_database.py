@@ -252,6 +252,22 @@ class OogleDatabase:
             """, (user_id, 1 if enabled else 0))
             conn.commit()
     
+    def get_games_by_date(self, date: str) -> List[Dict]:
+        """Récupère toutes les parties d'une date donnée."""
+        cursor = self.conn.execute("""
+            SELECT user_id, attempts, won FROM oogle_games
+            WHERE date = ?
+        """, (date,))
+        
+        results = []
+        for row in cursor.fetchall():
+            results.append({
+                'user_id': row[0],
+                'attempts': row[1],
+                'won': bool(row[2])
+            })
+        return results
+
     def get_notification_status(self, user_id: int) -> bool:
         """Vérifie si un utilisateur a activé les notifications."""
         with sqlite3.connect(self.db_path) as conn:
