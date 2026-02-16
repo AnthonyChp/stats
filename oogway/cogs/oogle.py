@@ -525,7 +525,7 @@ class OogleCog(commands.Cog):
             
             embed = discord.Embed(
                 title="🌅 Nouveau OOGLE disponible !",
-                description=f"**{today}**\n\nLe mot du jour est prêt ! Tape `/oogle` pour jouer ! ",
+                description=f"**{today}** — Le mot du jour est prêt ! Tape `/oogle` pour jouer !",
                 color=0x6AAA64
             )
             embed.set_footer(text="Désactive les notifications avec /oogle_notification")
@@ -542,3 +542,4 @@ class OogleCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(OogleCog(bot))
+
