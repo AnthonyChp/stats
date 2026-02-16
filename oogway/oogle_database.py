@@ -253,12 +253,14 @@ class OogleDatabase:
             conn.commit()
     
     def get_games_by_date(self, date: str) -> List[Dict]:
-        """Récupère toutes les parties d'une date donnée."""
-        cursor = self.conn.execute("""
+    """Récupère toutes les parties d'une date donnée."""
+    with sqlite3.connect(self.db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
             SELECT user_id, attempts, won FROM oogle_games
             WHERE date = ?
         """, (date,))
-        
+
         results = []
         for row in cursor.fetchall():
             results.append({
