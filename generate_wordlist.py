@@ -2,9 +2,7 @@
 # generate_wordlist_from_grammalecte.py
 """
 Script pour télécharger et filtrer les mots de Grammalecte pour OOGLE.
-
-Usage:
-    python3 generate_wordlist_from_grammalecte.py
+Version avec filtres stricts pour ne garder que des mots français courants.
 """
 
 import argparse
@@ -27,7 +25,7 @@ except ImportError:
 logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
 log = logging.getLogger(__name__)
 
-# URL correcte (Lexique 7.7 - 2025) - Section "Dictionnaires"
+# URL correcte (Lexique 7.7 - 2025)
 GRAMMALECTE_LEXIQUE_URL = "https://grammalecte.net/dic/lexique-grammalecte-fr-v7.7.zip"
 WORD_LENGTH = 5
 
@@ -38,26 +36,91 @@ def remove_accents(text: str) -> str:
     return ''.join(char for char in nfd if unicodedata.category(char) != 'Mn')
 
 
-def is_valid_word(word: str, original: str) -> bool:
-    """Vérifie si un mot est valide pour OOGLE."""
+def is_valid_word(word: str, original: str, tags: str = "") -> bool:
+    """
+    Vérifie si un mot est valide pour OOGLE avec filtres stricts.
+    """
     if len(word) != WORD_LENGTH or not word.isalpha():
         return False
+    
     if word != remove_accents(word):
         return False
+    
+    # Exclure les noms propres
     if original and original[0].isupper() and not original.isupper():
         return False
+    
+    # --- FILTRES STRICTES POUR MOTS PROPRES ---
+    
+    # 1. Pas de doubles voyelles inhabituelles en français
+    bad_vowel_patterns = ['ee', 'aa', 'ii', 'oo', 'uu', 'ae', 'oe', 'yy']
+    for pattern in bad_vowel_patterns:
+        if pattern in word:
+            return False
+    
+    # 2. Pas de consonnes doubles/triples bizarres
+    weird_consonants = [
+        'dt', 'gv', 'kg', 'kp', 'pq', 'qd', 'qf', 'qg', 'qh', 'qk', 
+        'qp', 'qv', 'qw', 'qx', 'qz', 'vq', 'wq', 'xq', 'zq', 'ww'
+    ]
+    for pattern in weird_consonants:
+        if pattern in word:
+            return False
+    
+    # 3. Lettres rares : max 1 par mot
+    rare_letters = {'w', 'k', 'x', 'z'}
+    rare_count = sum(1 for c in word if c in rare_letters)
+    if rare_count > 1:
+        return False
+    
+    # 4. Pas trop de consonnes d'affilée
+    consonants = 'bcdfghjklmnpqrstvwxz'
+    max_consonants = 0
+    current_consonants = 0
+    for c in word:
+        if c in consonants:
+            current_consonants += 1
+            max_consonants = max(max_consonants, current_consonants)
+        else:
+            current_consonants = 0
+    
+    if max_consonants > 3:  # Ex: "strst" = trop
+        return False
+    
+    # 5. Au moins 1 voyelle, pas plus de 4
+    vowels = sum(1 for c in word if c in 'aeiouy')
+    if vowels < 1 or vowels > 4:
+        return False
+    
+    # 6. Filtrer par étiquettes morphologiques
+    if tags:
+        # Exclure les formes verbales compliquées
+        bad_tags = [
+            'ppas',   # Participes passés (ex: "abees", "adnee")
+            'ppre',   # Participes présents
+            'ipsi',   # Passé simple (obsolète)
+            'iimp',   # Imparfait (formes rares)
+        ]
+        for bad_tag in bad_tags:
+            if bad_tag in tags.lower():
+                return False
+        
+        # Préférer les noms, adjectifs, verbes à l'infinitif
+        # (mais accepter aussi les formes courantes comme ipre = présent)
+    
     return True
 
 
 def calculate_word_score(word: str) -> float:
-    """Calcule un score de popularité pour un mot."""
+    """Calcule un score de popularité."""
     score = 50.0
     
+    # Lettres fréquentes en français
     frequent_letters = {
         'e': 10, 'a': 8, 's': 7, 'i': 6, 'n': 6, 
         't': 6, 'r': 5, 'u': 5, 'l': 4, 'o': 4
     }
-    rare_letters = {'w': -15, 'x': -10, 'z': -15, 'k': -8, 'y': -5}
+    rare_letters = {'w': -20, 'x': -15, 'z': -20, 'k': -10, 'y': -8}
     
     for char in word:
         if char in frequent_letters:
@@ -65,18 +128,20 @@ def calculate_word_score(word: str) -> float:
         elif char in rare_letters:
             score += rare_letters[char]
     
+    # Pénalité pour lettres rares répétées
     letter_counts = Counter(word)
     for char, count in letter_counts.items():
         if char in rare_letters and count > 1:
-            score -= 20
+            score -= 30
     
+    # Bonus pour bon équilibre voyelles/consonnes
     vowels = sum(1 for c in word if c in 'aeiouy')
     if 2 <= vowels <= 3:
-        score += 10
+        score += 15
     elif vowels == 1 or vowels == 4:
         score += 5
     else:
-        score -= 10
+        score -= 15
     
     return max(0, min(100, score))
 
@@ -104,7 +169,7 @@ def download_grammalecte_lexique(cache_dir: Path, force: bool = False) -> Path:
             file_list = zip_file.namelist()
             log.info(f"   Fichiers dans le ZIP : {file_list}")
             
-            # Chercher le fichier .txt qui contient "lexique" dans son nom
+            # Chercher le fichier .txt qui contient "lexique"
             lexique_file = None
             for filename in file_list:
                 if filename.endswith('.txt') and 'lexique' in filename.lower():
@@ -113,11 +178,10 @@ def download_grammalecte_lexique(cache_dir: Path, force: bool = False) -> Path:
                     break
             
             if not lexique_file:
-                # Prendre le premier fichier .txt
                 lexique_file = next((f for f in file_list if f.endswith('.txt')), None)
             
             if not lexique_file:
-                raise RuntimeError(f"Aucun fichier lexique trouvé dans le ZIP. Fichiers disponibles : {file_list}")
+                raise RuntimeError(f"Aucun fichier trouvé. Fichiers : {file_list}")
             
             log.info(f"   Extraction de : {lexique_file}")
             content = zip_file.read(lexique_file)
@@ -129,61 +193,56 @@ def download_grammalecte_lexique(cache_dir: Path, force: bool = False) -> Path:
         return lexique_path
         
     except requests.exceptions.RequestException as e:
-        log.error(f"❌ Erreur lors du téléchargement : {e}")
+        log.error(f"❌ Erreur : {e}")
         log.error(f"💡 Vérifiez https://grammalecte.net/#other_downloads")
-        raise
-    except zipfile.BadZipFile as e:
-        log.error(f"❌ Erreur lors de l'extraction du ZIP : {e}")
         raise
 
 
 def parse_grammalecte_lexique(lexique_path: Path) -> Set[str]:
-    """Parse le fichier lexique de Grammalecte (format TSV)."""
+    """Parse le fichier lexique (format TSV)."""
     log.info(f"📖 Lecture du lexique : {lexique_path}")
     
     valid_words = set()
     total_lines = 0
+    filtered_out = 0
     
-    encodings = ['utf-8', 'latin-1', 'iso-8859-1']
-    content = None
-    
-    for encoding in encodings:
-        try:
-            with open(lexique_path, 'r', encoding=encoding) as f:
-                content = f.read()
-            log.info(f"✅ Fichier lu avec l'encodage : {encoding}")
-            break
-        except UnicodeDecodeError:
-            continue
-    
-    if content is None:
-        raise RuntimeError(f"Impossible de lire le fichier")
+    try:
+        with open(lexique_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        log.info(f"✅ Fichier lu (UTF-8)")
+    except UnicodeDecodeError:
+        with open(lexique_path, 'r', encoding='latin-1') as f:
+            content = f.read()
+        log.info(f"✅ Fichier lu (Latin-1)")
     
     for line in content.split('\n'):
         total_lines += 1
         
-        # Ignorer les lignes vides, commentaires et en-têtes
+        # Ignorer en-têtes et commentaires
         if not line.strip() or line.startswith('#') or line.startswith('id\t'):
             continue
         
-        # Format TSV : colonnes séparées par des tabulations
+        # Format TSV : id, fid, Flexion, Lemme, Étiquettes, ...
         parts = line.strip().split('\t')
         
-        # La 3ème colonne (index 2) contient le mot "Flexion"
-        if len(parts) < 3:
+        if len(parts) < 5:
             continue
         
-        original_word = parts[2].strip()
+        original_word = parts[2].strip()  # Colonne "Flexion"
+        tags = parts[4].strip()            # Colonne "Étiquettes"
         
-        # Normaliser : minuscules, sans accents
+        # Normaliser
         normalized_word = remove_accents(original_word.lower())
         
-        # Vérifier si valide
-        if is_valid_word(normalized_word, original_word):
+        # Vérifier avec filtres stricts
+        if is_valid_word(normalized_word, original_word, tags):
             valid_words.add(normalized_word)
+        else:
+            filtered_out += 1
     
     log.info(f"✅ {total_lines:,} lignes traitées")
-    log.info(f"✅ {len(valid_words):,} mots de {WORD_LENGTH} lettres trouvés")
+    log.info(f"⚠️  {filtered_out:,} mots filtrés (bizarres/complexes)")
+    log.info(f"✅ {len(valid_words):,} mots propres conservés")
     
     return valid_words
 
@@ -209,7 +268,7 @@ def save_word_lists(solutions: List[str], all_words: Set[str], output_dir: Path)
     solutions_file = output_dir / "oogle_words.txt"
     accept_file = output_dir / "oogle_accept.txt"
     
-    log.info(f"💾 Sauvegarde des fichiers...")
+    log.info(f"💾 Sauvegarde...")
     
     with open(solutions_file, 'w', encoding='utf-8') as f:
         for word in sorted(solutions):
@@ -241,6 +300,10 @@ def display_statistics(solutions: List[str], all_words: Set[str]):
         percentage = (count / len(all_letters)) * 100
         log.info(f"   {letter.upper()} : {count:,} ({percentage:.1f}%)")
     
+    # Mots avec lettres rares
+    rare_words = [w for w in solutions if any(c in 'wxyz' for c in w)]
+    log.info(f"\n⚠️  Mots avec W/X/Y/Z : {len(rare_words)} ({len(rare_words)/len(solutions)*100:.1f}%)")
+    
     log.info("=" * 60)
 
 
@@ -257,8 +320,8 @@ def main():
     
     print()
     print("╔" + "═" * 58 + "╗")
-    print("║  🎮 OOGLE - Générateur de listes de mots".center(60) + "║")
-    print("║  📚 Source : Grammalecte".center(60) + "║")
+    print("║  🎮 OOGLE - Générateur de listes (VERSION PROPRE)".center(60) + "║")
+    print("║  📚 Source : Grammalecte + Filtres stricts".center(60) + "║")
     print("╚" + "═" * 58 + "╝")
     print()
     
@@ -276,13 +339,13 @@ def main():
         display_statistics(solutions, all_words)
         
         log.info("")
-        log.info("✅ Génération terminée avec succès !")
-        log.info(f"📁 Fichiers créés dans : {args.output_dir}/")
+        log.info("✅ Génération terminée !")
+        log.info(f"📁 Fichiers : {args.output_dir}/")
         
         return 0
         
     except KeyboardInterrupt:
-        log.warning("\n⚠️  Interrompu par l'utilisateur")
+        log.warning("\n⚠️  Interrompu")
         return 130
     except Exception as e:
         log.error(f"\n❌ Erreur : {e}")
