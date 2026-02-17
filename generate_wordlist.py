@@ -104,7 +104,7 @@ def main():
 
     Path("data").mkdir(exist_ok=True)
 
-    out = Path("data/words_5_clean.txt")
+    out = Path("data/oogle_accept.txt")
     out.write_text("\n".join(merged) + "\n")
 
     print(f"\nFichier généré : {out}")
