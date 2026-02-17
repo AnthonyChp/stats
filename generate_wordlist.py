@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
+import bz2
+import re
 import unicodedata
+import xml.etree.ElementTree as ET
 from pathlib import Path
+import requests
+from tqdm import tqdm
+
+DUMP_URL = "https://dumps.wikimedia.org/frwiktionary/latest/frwiktionary-latest-pages-articles.xml.bz2"
+DUMP_FILE = Path("data/frwiktionary.xml.bz2")
 
 WORD_LENGTH = 5
-
-GRAMMALECTE_FILE = Path("data/.cache/lexique-grammalecte-fr-v7.7.txt")
-HUNSPELL_FILE = Path("/usr/share/hunspell/fr_FR.dic")
 
 LIGATURES = {
     "œ": "oe",
@@ -14,7 +19,7 @@ LIGATURES = {
     "Æ": "ae",
 }
 
-BAD_PATTERNS = ["kk", "ww", "xx", "zz"]
+FR_SECTION = re.compile(r"==\s*\{\{=fr=\}\}\s*==", re.I)
 
 
 def normalize(text: str) -> str:
@@ -31,7 +36,7 @@ def normalize(text: str) -> str:
     return text.lower()
 
 
-def clean_word(w: str) -> str | None:
+def clean_word(w: str):
     w = normalize(w)
 
     if len(w) != WORD_LENGTH:
@@ -40,74 +45,63 @@ def clean_word(w: str) -> str | None:
     if not w.isalpha():
         return None
 
-    if any(p in w for p in BAD_PATTERNS):
+    if w[0].isupper():
         return None
 
     return w
 
 
-def parse_grammalecte() -> set[str]:
+def download_dump():
+    if DUMP_FILE.exists():
+        print("Dump déjà présent")
+        return
+
+    DUMP_FILE.parent.mkdir(exist_ok=True)
+
+    r = requests.get(DUMP_URL, stream=True)
+
+    with open(DUMP_FILE, "wb") as f:
+        for chunk in tqdm(r.iter_content(1024 * 1024)):
+            f.write(chunk)
+
+
+def extract_words():
+    print("Parsing Wiktionnaire...")
+
     words = set()
 
-    with open(GRAMMALECTE_FILE, encoding="utf-8") as f:
-        for line in f:
-            if line.startswith("#") or line.startswith("id\t"):
-                continue
+    with bz2.open(DUMP_FILE, "rb") as f:
+        context = ET.iterparse(f, events=("end",))
 
-            parts = line.split("\t")
-            if len(parts) < 3:
-                continue
+        for event, elem in context:
+            if elem.tag.endswith("page"):
+                title = elem.find(".//{*}title")
+                text = elem.find(".//{*}text")
 
-            flexion = parts[2]
+                if title is not None and text is not None:
+                    word = title.text or ""
+                    content = text.text or ""
 
-            if flexion.isupper():
-                continue
+                    if FR_SECTION.search(content):
+                        w = clean_word(word)
+                        if w:
+                            words.add(w)
 
-            w = clean_word(flexion)
-            if w:
-                words.add(w)
-
-    return words
-
-
-def parse_hunspell() -> set[str]:
-    words = set()
-
-    with open(HUNSPELL_FILE, encoding="latin-1") as f:
-        next(f)  # skip header
-
-        for line in f:
-            w = line.split("/")[0]
-
-            if w.isupper():
-                continue
-
-            w = clean_word(w)
-            if w:
-                words.add(w)
+                elem.clear()
 
     return words
 
 
 def main():
-    print("Parsing Grammalecte...")
-    g = parse_grammalecte()
-    print(f"  {len(g)} mots")
+    download_dump()
+    words = extract_words()
 
-    print("Parsing Hunspell...")
-    h = parse_hunspell()
-    print(f"  {len(h)} mots")
+    print(f"\nMots FR 5 lettres trouvés : {len(words)}")
 
-    merged = sorted(g | h)
+    out = Path("data/wiktionary_5.txt")
+    out.write_text("\n".join(sorted(words)) + "\n")
 
-    print(f"\nTOTAL FINAL : {len(merged)} mots")
-
-    Path("data").mkdir(exist_ok=True)
-
-    out = Path("data/oogle_accept.txt")
-    out.write_text("\n".join(merged) + "\n")
-
-    print(f"\nFichier généré : {out}")
+    print(f"Fichier : {out}")
 
 
 if __name__ == "__main__":
