@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-# generate_wordlist_from_grammalecte.py
 """
-Script pour télécharger et filtrer les mots de Grammalecte pour OOGLE.
-Version avec filtres stricts pour ne garder que des mots français courants.
+Génère TOUTES les mots de 5 lettres du français depuis Grammalecte.
+Stratégie : 
+  - oogle_words.txt  = solutions (mots courants, sans accents, scorés)
+  - oogle_accept.txt = TOUS les mots valides (pour l'acceptation des guesses)
 """
 
 import argparse
@@ -13,346 +14,308 @@ import zipfile
 from collections import Counter
 from io import BytesIO
 from pathlib import Path
-from typing import Set, List
+from typing import Set, List, Tuple
 
 try:
     import requests
 except ImportError:
-    print("❌ Module 'requests' non installé.")
-    print("📦 Installation : pip install requests")
+    print("❌ pip install requests")
     sys.exit(1)
 
-logging.basicConfig(level=logging.INFO, format='%(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
 log = logging.getLogger(__name__)
 
-# URL correcte (Lexique 7.7 - 2025)
-GRAMMALECTE_LEXIQUE_URL = "https://grammalecte.net/dic/lexique-grammalecte-fr-v7.7.zip"
+GRAMMALECTE_URL = "https://grammalecte.net/dic/lexique-grammalecte-fr-v7.7.zip"
 WORD_LENGTH = 5
 
 
-def remove_accents(text: str) -> str:
-    """Supprime les accents d'un texte."""
-    nfd = unicodedata.normalize('NFD', text)
-    return ''.join(char for char in nfd if unicodedata.category(char) != 'Mn')
+# ──────────────────────────────────────────────────────────────────────────────
+# Utilitaires
+# ──────────────────────────────────────────────────────────────────────────────
+
+def strip_accents(text: str) -> str:
+    nfd = unicodedata.normalize("NFD", text)
+    return "".join(c for c in nfd if unicodedata.category(c) != "Mn")
 
 
-def is_valid_word(word: str, original: str, tags: str = "") -> bool:
+def is_acceptable(word_no_accent: str, original: str) -> bool:
     """
-    Vérifie si un mot est valide pour OOGLE avec filtres stricts.
+    Critères MINIMALISTES : on accepte quasi tout.
+    On exclut seulement ce qui est vraiment injouable.
     """
-    if len(word) != WORD_LENGTH or not word.isalpha():
+    # Longueur exacte et lettres uniquement
+    if len(word_no_accent) != WORD_LENGTH:
         return False
-    
-    if word != remove_accents(word):
+    if not word_no_accent.isalpha():
         return False
-    
-    # Exclure les noms propres
-    if original and original[0].isupper() and not original.isupper():
+
+    # Doit être entièrement en minuscules après normalisation
+    if not word_no_accent.islower():
         return False
-    
-    # --- FILTRES STRICTES POUR MOTS PROPRES ---
-    
-    # 1. Pas de doubles voyelles inhabituelles en français
-    bad_vowel_patterns = ['ee', 'aa', 'ii', 'oo', 'uu', 'ae', 'oe', 'yy']
-    for pattern in bad_vowel_patterns:
-        if pattern in word:
-            return False
-    
-    # 2. Pas de consonnes doubles/triples bizarres
-    weird_consonants = [
-        'dt', 'gv', 'kg', 'kp', 'pq', 'qd', 'qf', 'qg', 'qh', 'qk', 
-        'qp', 'qv', 'qw', 'qx', 'qz', 'vq', 'wq', 'xq', 'zq', 'ww'
-    ]
-    for pattern in weird_consonants:
-        if pattern in word:
-            return False
-    
-    # 3. Lettres rares : max 1 par mot
-    rare_letters = {'w', 'k', 'x', 'z'}
-    rare_count = sum(1 for c in word if c in rare_letters)
-    if rare_count > 1:
+
+    # Exclure noms propres (commence par majuscule dans le fichier source)
+    if original and original[0].isupper():
         return False
-    
-    # 4. Pas trop de consonnes d'affilée
-    consonants = 'bcdfghjklmnpqrstvwxz'
-    max_consonants = 0
-    current_consonants = 0
-    for c in word:
-        if c in consonants:
-            current_consonants += 1
-            max_consonants = max(max_consonants, current_consonants)
-        else:
-            current_consonants = 0
-    
-    if max_consonants > 3:  # Ex: "strst" = trop
-        return False
-    
-    # 5. Au moins 1 voyelle, pas plus de 4
-    vowels = sum(1 for c in word if c in 'aeiouy')
-    if vowels < 1 or vowels > 4:
-        return False
-    
-    # 6. Filtrer par étiquettes morphologiques
-    if tags:
-        # Exclure les formes verbales compliquées
-        bad_tags = [
-            'ppas',   # Participes passés (ex: "abees", "adnee")
-            'ppre',   # Participes présents
-            'ipsi',   # Passé simple (obsolète)
-            'iimp',   # Imparfait (formes rares)
-        ]
-        for bad_tag in bad_tags:
-            if bad_tag in tags.lower():
-                return False
-        
-        # Préférer les noms, adjectifs, verbes à l'infinitif
-        # (mais accepter aussi les formes courantes comme ipre = présent)
-    
+
     return True
 
 
-def calculate_word_score(word: str) -> float:
-    """Calcule un score de popularité."""
-    score = 50.0
-    
-    # Lettres fréquentes en français
-    frequent_letters = {
-        'e': 10, 'a': 8, 's': 7, 'i': 6, 'n': 6, 
-        't': 6, 'r': 5, 'u': 5, 'l': 4, 'o': 4
-    }
-    rare_letters = {'w': -20, 'x': -15, 'z': -20, 'k': -10, 'y': -8}
-    
-    for char in word:
-        if char in frequent_letters:
-            score += frequent_letters[char]
-        elif char in rare_letters:
-            score += rare_letters[char]
-    
-    # Pénalité pour lettres rares répétées
-    letter_counts = Counter(word)
-    for char, count in letter_counts.items():
-        if char in rare_letters and count > 1:
-            score -= 30
-    
-    # Bonus pour bon équilibre voyelles/consonnes
-    vowels = sum(1 for c in word if c in 'aeiouy')
-    if 2 <= vowels <= 3:
-        score += 15
-    elif vowels == 1 or vowels == 4:
-        score += 5
+def is_good_solution(word: str, tags: str, freq_index: int) -> bool:
+    """
+    Critères pour les SOLUTIONS (mot du jour) : un peu plus stricts
+    pour éviter les mots vraiment obscurs comme mot du jour.
+    On garde quand même énormément de mots.
+    """
+    # Pas de doubles voyelles typiquement non-françaises
+    for pat in ("ee", "aa", "ii", "oo", "uu"):
+        if pat in word:
+            return False
+
+    # Pas trop de lettres exotiques
+    exotic = sum(1 for c in word if c in "wxkq")
+    if exotic > 1:
+        return False
+
+    # Pas trop de consonnes d'affilée (5 consonnes = injouable)
+    vowels_pos = [i for i, c in enumerate(word) if c in "aeiouy"]
+    if len(vowels_pos) == 0:
+        return False
+
+    # Exclure formes verbales ultra-rares comme solution
+    bad_for_solution = ("ipsi", "ppas", "ppre")
+    if any(t in tags for t in bad_for_solution):
+        return False
+
+    # Fréquence : exclure les mots avec indice de fréquence très bas (< 3)
+    if freq_index < 3:
+        return False
+
+    return True
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Score pour trier les solutions (mots courants en premier)
+# ──────────────────────────────────────────────────────────────────────────────
+
+LETTER_SCORE = {
+    "e": 15, "a": 12, "s": 11, "i": 10, "n": 10,
+    "t": 10, "r":  9, "u":  9, "l":  8, "o":  8,
+    "d":  5, "c":  5, "m":  5, "p":  5,
+    "b":  2, "f":  2, "g":  2, "h":  2, "v":  2,
+    "j":  0, "q":  0, "x": -5, "y": -5, "z": -8,
+    "w": -10, "k": -8,
+}
+
+def score_word(word: str, freq_index: int) -> float:
+    base = sum(LETTER_SCORE.get(c, 0) for c in word)
+
+    # Bonus voyelles équilibrées
+    v = sum(1 for c in word if c in "aeiouy")
+    if 2 <= v <= 3:
+        base += 10
+    elif v == 1 or v == 4:
+        base += 3
     else:
-        score -= 15
-    
-    return max(0, min(100, score))
+        base -= 10
+
+    # Bonus fréquence (0–9 dans le lexique)
+    base += freq_index * 3
+
+    return base
 
 
-def download_grammalecte_lexique(cache_dir: Path, force: bool = False) -> Path:
-    """Télécharge le lexique Grammalecte."""
+# ──────────────────────────────────────────────────────────────────────────────
+# Téléchargement
+# ──────────────────────────────────────────────────────────────────────────────
+
+def download_lexique(cache_dir: Path, force: bool = False) -> Path:
     cache_dir.mkdir(parents=True, exist_ok=True)
-    lexique_path = cache_dir / "lexique-grammalecte-fr-v7.7.txt"
-    
-    if lexique_path.exists() and not force:
-        log.info(f"📂 Utilisation du cache : {lexique_path}")
-        return lexique_path
-    
-    log.info(f"📥 Téléchargement du lexique Grammalecte...")
-    log.info(f"   URL : {GRAMMALECTE_LEXIQUE_URL}")
-    
-    try:
-        response = requests.get(GRAMMALECTE_LEXIQUE_URL, timeout=60)
-        response.raise_for_status()
-        
-        log.info(f"✅ Téléchargement terminé ({len(response.content) // 1024} KB)")
-        log.info(f"📦 Extraction du ZIP...")
-        
-        with zipfile.ZipFile(BytesIO(response.content)) as zip_file:
-            file_list = zip_file.namelist()
-            log.info(f"   Fichiers dans le ZIP : {file_list}")
-            
-            # Chercher le fichier .txt qui contient "lexique"
-            lexique_file = None
-            for filename in file_list:
-                if filename.endswith('.txt') and 'lexique' in filename.lower():
-                    lexique_file = filename
-                    log.info(f"   Fichier lexique trouvé : {lexique_file}")
-                    break
-            
-            if not lexique_file:
-                lexique_file = next((f for f in file_list if f.endswith('.txt')), None)
-            
-            if not lexique_file:
-                raise RuntimeError(f"Aucun fichier trouvé. Fichiers : {file_list}")
-            
-            log.info(f"   Extraction de : {lexique_file}")
-            content = zip_file.read(lexique_file)
-            
-            with open(lexique_path, 'wb') as f:
-                f.write(content)
-        
-        log.info(f"✅ Lexique extrait : {lexique_path}")
-        return lexique_path
-        
-    except requests.exceptions.RequestException as e:
-        log.error(f"❌ Erreur : {e}")
-        log.error(f"💡 Vérifiez https://grammalecte.net/#other_downloads")
-        raise
+    out = cache_dir / "lexique-grammalecte-fr-v7.7.txt"
+
+    if out.exists() and not force:
+        log.info(f"📂 Cache : {out}")
+        return out
+
+    log.info(f"📥 Téléchargement depuis {GRAMMALECTE_URL} ...")
+    r = requests.get(GRAMMALECTE_URL, timeout=120)
+    r.raise_for_status()
+    log.info(f"✅ {len(r.content)//1024} KB téléchargés")
+
+    with zipfile.ZipFile(BytesIO(r.content)) as zf:
+        names = zf.namelist()
+        log.info(f"   Fichiers ZIP : {names}")
+        target = next(
+            (n for n in names if n.endswith(".txt") and "lexique" in n.lower()),
+            next((n for n in names if n.endswith(".txt")), None)
+        )
+        if not target:
+            raise RuntimeError(f"Aucun .txt dans le ZIP : {names}")
+        log.info(f"   Extraction : {target}")
+        out.write_bytes(zf.read(target))
+
+    log.info(f"✅ Lexique sauvegardé : {out}")
+    return out
 
 
-def parse_grammalecte_lexique(lexique_path: Path) -> Set[str]:
-    """Parse le fichier lexique (format TSV)."""
-    log.info(f"📖 Lecture du lexique : {lexique_path}")
-    
-    valid_words = set()
-    total_lines = 0
-    filtered_out = 0
-    
+# ──────────────────────────────────────────────────────────────────────────────
+# Parsing TSV
+# ──────────────────────────────────────────────────────────────────────────────
+
+def parse_lexique(path: Path) -> Tuple[Set[str], List[Tuple[str, float]]]:
+    """
+    Retourne :
+      - accept_set  : TOUS les mots valides de 5 lettres (pour les guesses)
+      - solutions   : [(mot, score)] pour les solutions triées
+    """
+    log.info(f"📖 Parsing : {path}")
+
+    accept_set: Set[str] = set()
+    solution_candidates: List[Tuple[str, float]] = []
+
     try:
-        with open(lexique_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        log.info(f"✅ Fichier lu (UTF-8)")
+        f = open(path, encoding="utf-8")
     except UnicodeDecodeError:
-        with open(lexique_path, 'r', encoding='latin-1') as f:
-            content = f.read()
-        log.info(f"✅ Fichier lu (Latin-1)")
-    
-    for line in content.split('\n'):
-        total_lines += 1
-        
-        # Ignorer en-têtes et commentaires
-        if not line.strip() or line.startswith('#') or line.startswith('id\t'):
+        f = open(path, encoding="latin-1")
+
+    total = skipped = 0
+
+    for line in f:
+        total += 1
+        line = line.rstrip("\n")
+
+        # Ignorer entêtes et commentaires
+        if not line or line.startswith("#") or line.startswith("id\t"):
             continue
-        
-        # Format TSV : id, fid, Flexion, Lemme, Étiquettes, ...
-        parts = line.strip().split('\t')
-        
+
+        parts = line.split("\t")
+        # Colonnes TSV : id fid Flexion Lemme Étiquettes Métagraphe ... Indice_fréquence
         if len(parts) < 5:
+            skipped += 1
             continue
-        
-        original_word = parts[2].strip()  # Colonne "Flexion"
-        tags = parts[4].strip()            # Colonne "Étiquettes"
-        
+
+        flexion   = parts[2]   # Mot fléchi
+        tags      = parts[4]   # Étiquettes morphologiques
+
+        # Indice de fréquence = dernière colonne (0–9)
+        try:
+            freq_index = int(parts[-1])
+        except (ValueError, IndexError):
+            freq_index = 0
+
         # Normaliser
-        normalized_word = remove_accents(original_word.lower())
-        
-        # Vérifier avec filtres stricts
-        if is_valid_word(normalized_word, original_word, tags):
-            valid_words.add(normalized_word)
-        else:
-            filtered_out += 1
-    
-    log.info(f"✅ {total_lines:,} lignes traitées")
-    log.info(f"⚠️  {filtered_out:,} mots filtrés (bizarres/complexes)")
-    log.info(f"✅ {len(valid_words):,} mots propres conservés")
-    
-    return valid_words
+        word = strip_accents(flexion.lower())
+
+        # Test acceptabilité (liste complète)
+        if not is_acceptable(word, flexion):
+            skipped += 1
+            continue
+
+        accept_set.add(word)
+
+        # Test solution
+        if is_good_solution(word, tags, freq_index):
+            sc = score_word(word, freq_index)
+            solution_candidates.append((word, sc))
+
+    f.close()
+
+    log.info(f"   {total:,} lignes lues, {skipped:,} ignorées")
+    log.info(f"✅ {len(accept_set):,} mots acceptés (liste complète)")
+    log.info(f"✅ {len(solution_candidates):,} candidats solutions")
+
+    return accept_set, solution_candidates
 
 
-def select_solution_words(all_words: Set[str], max_count: int) -> List[str]:
-    """Sélectionne les mots les plus adaptés."""
-    log.info(f"🎯 Sélection des {max_count} meilleurs mots...")
-    
-    word_scores = [(word, calculate_word_score(word)) for word in all_words]
-    word_scores.sort(key=lambda x: x[1], reverse=True)
-    selected = [word for word, score in word_scores[:max_count]]
-    
+# ──────────────────────────────────────────────────────────────────────────────
+# Sélection et sauvegarde
+# ──────────────────────────────────────────────────────────────────────────────
+
+def select_solutions(candidates: List[Tuple[str, float]], max_count: int) -> List[str]:
+    # Dédupliquer puis trier par score décroissant
+    seen: dict = {}
+    for word, sc in candidates:
+        if word not in seen or sc > seen[word]:
+            seen[word] = sc
+
+    ranked = sorted(seen.items(), key=lambda x: x[1], reverse=True)
+    selected = [w for w, _ in ranked[:max_count]]
+    log.info(f"🎯 {len(selected)} solutions sélectionnées")
     if selected:
-        log.info(f"   Exemples : {', '.join(selected[:10])}")
-    
+        log.info(f"   Top 15 : {', '.join(selected[:15])}")
     return selected
 
 
-def save_word_lists(solutions: List[str], all_words: Set[str], output_dir: Path):
-    """Sauvegarde les listes de mots."""
+def save(solutions: List[str], accept: Set[str], output_dir: Path):
     output_dir.mkdir(parents=True, exist_ok=True)
-    
-    solutions_file = output_dir / "oogle_words.txt"
-    accept_file = output_dir / "oogle_accept.txt"
-    
-    log.info(f"💾 Sauvegarde...")
-    
-    with open(solutions_file, 'w', encoding='utf-8') as f:
-        for word in sorted(solutions):
-            f.write(f"{word}\n")
-    
-    log.info(f"   ✅ {solutions_file} ({len(solutions)} mots)")
-    
-    with open(accept_file, 'w', encoding='utf-8') as f:
-        for word in sorted(all_words):
-            f.write(f"{word}\n")
-    
-    log.info(f"   ✅ {accept_file} ({len(all_words)} mots)")
+
+    sol_file = output_dir / "oogle_words.txt"
+    acc_file = output_dir / "oogle_accept.txt"
+
+    sol_file.write_text("\n".join(sorted(solutions)) + "\n", encoding="utf-8")
+    acc_file.write_text("\n".join(sorted(accept)) + "\n", encoding="utf-8")
+
+    log.info(f"💾 {sol_file.name} : {len(solutions):,} mots")
+    log.info(f"💾 {acc_file.name} : {len(accept):,} mots")
 
 
-def display_statistics(solutions: List[str], all_words: Set[str]):
-    """Affiche des statistiques."""
-    log.info("")
-    log.info("=" * 60)
-    log.info("📊 STATISTIQUES")
-    log.info("=" * 60)
-    log.info(f"Solutions quotidiennes : {len(solutions):,} mots")
-    log.info(f"Mots acceptés total    : {len(all_words):,} mots")
-    
-    all_letters = ''.join(solutions)
-    letter_freq = Counter(all_letters)
-    log.info("")
-    log.info("🔤 Top 10 lettres :")
-    for letter, count in letter_freq.most_common(10):
-        percentage = (count / len(all_letters)) * 100
-        log.info(f"   {letter.upper()} : {count:,} ({percentage:.1f}%)")
-    
-    # Mots avec lettres rares
-    rare_words = [w for w in solutions if any(c in 'wxyz' for c in w)]
-    log.info(f"\n⚠️  Mots avec W/X/Y/Z : {len(rare_words)} ({len(rare_words)/len(solutions)*100:.1f}%)")
-    
-    log.info("=" * 60)
+def stats(solutions: List[str], accept: Set[str]):
+    print()
+    print("=" * 60)
+    print("📊  STATISTIQUES")
+    print("=" * 60)
+    print(f"  Solutions  : {len(solutions):,}")
+    print(f"  Acceptés   : {len(accept):,}")
 
+    freq = Counter("".join(solutions))
+    total_letters = sum(freq.values())
+    print()
+    print("  Top 10 lettres dans les solutions :")
+    for letter, count in freq.most_common(10):
+        pct = count / total_letters * 100
+        print(f"    {letter.upper()} : {'█' * int(pct)} {pct:.1f}%")
+
+    exotic = [w for w in solutions if any(c in "wxkqz" for c in w)]
+    print(f"\n  Mots avec W/X/K/Q/Z : {len(exotic)} ({len(exotic)/len(solutions)*100:.1f}%)")
+    print("=" * 60)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Main
+# ──────────────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Génère les listes OOGLE depuis Grammalecte")
-    parser.add_argument('--output-dir', type=Path, default=Path('data'))
-    parser.add_argument('--max-solutions', type=int, default=800)
-    parser.add_argument('--force', action='store_true')
-    parser.add_argument('--verbose', action='store_true')
-    args = parser.parse_args()
-    
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
-    
+    ap = argparse.ArgumentParser(description="Génère les listes OOGLE depuis Grammalecte (version complète)")
+    ap.add_argument("--output-dir",    type=Path, default=Path("data"))
+    ap.add_argument("--max-solutions", type=int,  default=1500,
+                    help="Nombre maximum de mots solutions (défaut : 1500)")
+    ap.add_argument("--force",         action="store_true",
+                    help="Re-télécharger même si le cache existe")
+    args = ap.parse_args()
+
     print()
-    print("╔" + "═" * 58 + "╗")
-    print("║  🎮 OOGLE - Générateur de listes (VERSION PROPRE)".center(60) + "║")
-    print("║  📚 Source : Grammalecte + Filtres stricts".center(60) + "║")
-    print("╚" + "═" * 58 + "╝")
+    print("╔══════════════════════════════════════════════════════════════╗")
+    print("║  🎮 OOGLE – Générateur de listes COMPLET                    ║")
+    print("║  📚 Source : Grammalecte (tous les mots 5 lettres du FR)    ║")
+    print("╚══════════════════════════════════════════════════════════════╝")
     print()
-    
-    try:
-        cache_dir = args.output_dir / '.cache'
-        lexique_path = download_grammalecte_lexique(cache_dir, args.force)
-        all_words = parse_grammalecte_lexique(lexique_path)
-        
-        if not all_words:
-            log.error("❌ Aucun mot valide trouvé !")
-            return 1
-        
-        solutions = select_solution_words(all_words, args.max_solutions)
-        save_word_lists(solutions, all_words, args.output_dir)
-        display_statistics(solutions, all_words)
-        
-        log.info("")
-        log.info("✅ Génération terminée !")
-        log.info(f"📁 Fichiers : {args.output_dir}/")
-        
-        return 0
-        
-    except KeyboardInterrupt:
-        log.warning("\n⚠️  Interrompu")
-        return 130
-    except Exception as e:
-        log.error(f"\n❌ Erreur : {e}")
-        if args.verbose:
-            import traceback
-            traceback.print_exc()
+
+    cache_dir  = args.output_dir / ".cache"
+    lexique    = download_lexique(cache_dir, args.force)
+    accept, candidates = parse_lexique(lexique)
+
+    if not accept:
+        log.error("❌ Aucun mot trouvé !")
         return 1
+
+    solutions = select_solutions(candidates, args.max_solutions)
+    save(solutions, accept, args.output_dir)
+    stats(solutions, accept)
+
+    print()
+    print("✅  Génération terminée !")
+    print(f"📁  Fichiers dans : {args.output_dir}/")
+    print()
+    return 0
 
 
 if __name__ == "__main__":
