@@ -354,15 +354,26 @@ class CaptainPickView(discord.ui.View):
 
     # ---------- UI builders ----------
     def _make_options(self) -> List[discord.SelectOption]:
-        opts: List[discord.SelectOption] = []
-        for uid in self.remaining:
-            label = f"Bot{abs(uid)}" if uid < 0 else f"Joueur {uid}"
-            # si on peut resolve le nom dans le cache du JoinView :
-            label = self.join_view.name_cache.get(uid, label)
-            opts.append(discord.SelectOption(label=label, value=str(uid)))
-        if not opts:
-            opts = [discord.SelectOption(label="(plus personne)", value="none", default=True)]
-        return opts
+    opts: List[discord.SelectOption] = []
+    for uid in self.remaining:
+        if uid < 0:
+            label = f"Bot{abs(uid)}"
+        else:
+            # Priorité 1 : display_name via la guild (pseudo serveur)
+            member = None
+            if self.parent_message and self.parent_message.guild:
+                member = self.parent_message.guild.get_member(uid)
+            if member:
+                label = member.display_name
+            else:
+                # Priorité 2 : name_cache contient des mentions <@id>,
+                # on nettoie pour obtenir juste le texte
+                raw = self.join_view.name_cache.get(uid, str(uid))
+                label = raw.strip("<@!>") if raw.startswith("<@") else raw
+        opts.append(discord.SelectOption(label=label, value=str(uid)))
+    if not opts:
+        opts = [discord.SelectOption(label="(plus personne)", value="none", default=True)]
+    return opts
 
     def _btn_reroll(self) -> discord.ui.Button:
         btn = discord.ui.Button(label="🔄 Reroll capitaines", style=discord.ButtonStyle.secondary, row=1)
@@ -741,3 +752,4 @@ class Custom5v5Cog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Custom5v5Cog(bot))
+
