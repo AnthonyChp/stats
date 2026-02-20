@@ -25,7 +25,7 @@ MAX_ATTEMPTS = 6
 # Chargement des listes de mots
 # ──────────────────────────────────────────────────────────────────────────────
 
-_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+_DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 
 # Tentative 1: Fichiers manuels (si ils existent)
 _SOLUTIONS_FILE = _DATA_DIR / "oogle_words.txt"
@@ -631,4 +631,5 @@ class OogleCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(OogleCog(bot))
+
 
