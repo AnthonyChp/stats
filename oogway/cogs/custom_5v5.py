@@ -63,14 +63,14 @@ async def load_match_state() -> Optional[Dict]:
         raw = await r_get("current_match")
         if not raw:
             return None
-        
+
         if isinstance(raw, dict):
             return raw
-        
+
         if isinstance(raw, str):
             data = json.loads(raw)
             return data if isinstance(data, dict) else None
-        
+
         return None
     except Exception as e:
         logger.error(f"❌ Erreur chargement état: {e}")
@@ -98,21 +98,21 @@ def format_team_list(
     guild: Optional[discord.Guild] = None,
     name_cache: Optional[Dict[int, str]] = None
 ) -> str:
-    """✅ Helper centralisé pour formater une team."""
+    """✅ Helper centralisé pour formater une team (utilise les mentions pour les embeds)."""
     lines = []
     for uid in team:
         crown = "👑 " if uid == captain_id else ""
-        
-        # Priorité: member.mention > cache > fallback
+
+        # Priorité: member.mention > cache (mentions) > fallback
         if guild and (member := guild.get_member(uid)):
             mention = member.mention
         elif name_cache and uid in name_cache:
             mention = name_cache[uid]
         else:
             mention = f"<@{uid}>"
-        
+
         lines.append(f"{crown}{mention}")
-    
+
     return "\n".join(lines) if lines else "—"
 
 
@@ -133,25 +133,25 @@ async def get_members_batch(guild: discord.Guild, uids: List[int]) -> Dict[int, 
 # ============================================================================
 class JoinView(discord.ui.View):
     def __init__(self, creator: discord.Member, bo: int, fearless: bool, captain_pick: bool):
-        super().__init__(timeout=None) 
+        super().__init__(timeout=None)
         self.creator: discord.Member = creator
         self.bo, self.fearless = bo, fearless
         self.captain_pick = captain_pick
 
         self.players: Set[int] = set()
-        self.name_cache: dict[int, str] = {}
+        self.name_cache: dict[int, str] = {}      # mention (<@123>) — pour les embeds
+        self.display_cache: dict[int, str] = {}   # ✅ display name — pour les selects
         self.message: Optional[discord.Message] = None
         self.embed: Optional[discord.Embed] = None
-
 
     # ───────────────────────────── Error handler ──────────────────
     async def on_error(self, interaction: Interaction, error: Exception, item):
         """✅ Cleanup automatique en cas d'erreur."""
         logger.error(f"❌ Erreur dans JoinView: {error}", exc_info=True)
-        
+
         await clear_match_state()
         interaction.client._current_match = None  # type: ignore[attr-defined]
-        
+
         try:
             if interaction.response.is_done():
                 await interaction.followup.send(
@@ -182,7 +182,8 @@ class JoinView(discord.ui.View):
             return await inter.response.send_message("❌ Partie pleine !", ephemeral=True)
 
         self.players.add(uid)
-        self.name_cache[uid] = inter.user.mention
+        self.name_cache[uid] = inter.user.mention           # pour les embeds
+        self.display_cache[uid] = inter.user.display_name  # ✅ pour les selects
         await inter.response.defer()
         await self.refresh()
 
@@ -196,7 +197,7 @@ class JoinView(discord.ui.View):
 
     @discord.ui.button(
         label="🚪 Quitter",
-        style=discord.ButtonStyle.secondary, # type: ignore[arg-type]
+        style=discord.ButtonStyle.secondary,  # type: ignore[arg-type]
         row=0,
     )
     async def quit(self, inter: Interaction, _):  # type: ignore[override]
@@ -212,7 +213,7 @@ class JoinView(discord.ui.View):
 
     @discord.ui.button(
         label="❌ Annuler la custom",
-        style=discord.ButtonStyle.danger, # type: ignore[arg-type]
+        style=discord.ButtonStyle.danger,  # type: ignore[arg-type]
         row=0,
     )
     async def cancel(self, inter: Interaction, _):  # type: ignore[override]
@@ -220,7 +221,7 @@ class JoinView(discord.ui.View):
             return await inter.response.send_message("⛔ Organisateur uniquement.", ephemeral=True)
 
         logger.info(f"❌ Custom annulée par {inter.user.name}")
-        
+
         await inter.response.send_message("❌ Custom annulée.")
         await self.message.delete()
         await clear_match_state()
@@ -230,7 +231,7 @@ class JoinView(discord.ui.View):
     # Bouton dev (remplissage auto de bots)
     @discord.ui.button(
         label="🔧 Compléter (dev)",
-        style=discord.ButtonStyle.secondary, # type: ignore[arg-type]
+        style=discord.ButtonStyle.secondary,  # type: ignore[arg-type]
         row=1)
     async def complete_dev(self, inter: Interaction, _):  # type: ignore[override]
         if inter.user != self.creator:
@@ -240,7 +241,9 @@ class JoinView(discord.ui.View):
         while len(self.players) < 10:
             fake_id = generate_bot_id(bot_count)
             self.players.add(fake_id)
-            self.name_cache[fake_id] = f"🤖 Bot{bot_count + 1}"
+            bot_label = f"Bot{bot_count + 1}"
+            self.name_cache[fake_id] = f"🤖 {bot_label}"
+            self.display_cache[fake_id] = bot_label  # ✅ pas d'emoji dans le select
             bot_count += 1
 
         logger.info(f"🔧 {bot_count} bots ajoutés par {inter.user.name}")
@@ -290,6 +293,7 @@ class JoinView(discord.ui.View):
             "creator_id": self.creator.id,
             "players": list(self.players),
             "name_cache": self.name_cache,
+            "display_cache": self.display_cache,
             "bo": self.bo,
             "fearless": self.fearless,
             "captain_pick": self.captain_pick,
@@ -324,7 +328,7 @@ class JoinView(discord.ui.View):
                 view=view,
             )
             view.parent_message = msg
-            
+
             # ✅ Sauvegarder état phase captain
             await save_match_state({
                 "phase": "captain_pick",
@@ -338,8 +342,9 @@ class JoinView(discord.ui.View):
                 "message_id": msg.id,
                 "channel_id": msg.channel.id,
                 "name_cache": self.name_cache,
+                "display_cache": self.display_cache,
             })
-            
+
             return
 
         # ── Mode Random : logique actuelle avec ajustement demandé
@@ -349,7 +354,7 @@ class JoinView(discord.ui.View):
             view=view,
         )
         view.parent_message = msg
-        
+
         # ✅ Sauvegarder état phase confirm
         await save_match_state({
             "phase": "confirm",
@@ -360,6 +365,7 @@ class JoinView(discord.ui.View):
             "message_id": msg.id,
             "channel_id": msg.channel.id,
             "name_cache": self.name_cache,
+            "display_cache": self.display_cache,
         })
 
 
@@ -370,14 +376,12 @@ class TeamConfirmView(discord.ui.View):
     """Affiché publiquement ; seul l'organisateur clique."""
 
     def __init__(self, creator, team_a, team_b, join_view: JoinView):
-        super().__init__(timeout=None) 
+        super().__init__(timeout=None)
         self.creator = creator
         self.team_a: List[int] = team_a
         self.team_b: List[int] = team_b
         self.join_view: JoinView = join_view
         self.parent_message: Optional[discord.Message] = None
-
-
 
     def build_embed(self, guild: discord.Guild) -> discord.Embed:
         embed = discord.Embed(
@@ -406,9 +410,9 @@ class TeamConfirmView(discord.ui.View):
 
     @discord.ui.button(
         label="🔄 Reroll",
-        style=discord.ButtonStyle.secondary, # type: ignore[arg-type]
+        style=discord.ButtonStyle.secondary,  # type: ignore[arg-type]
         row=0,
-        )
+    )
     async def reroll(self, inter: Interaction, _):  # type: ignore[override]
         if inter.user != self.creator:
             return await inter.response.send_message("⛔ Organisateur uniquement.", ephemeral=True)
@@ -416,11 +420,11 @@ class TeamConfirmView(discord.ui.View):
         ids = self.team_a + self.team_b
         random.shuffle(ids)
         self.team_a, self.team_b = ids[:5], ids[5:]
-        
+
         logger.info(f"🔄 Reroll par {inter.user.name}")
-        
+
         await inter.response.edit_message(embed=self.build_embed(inter.guild))
-        
+
         # ✅ Mettre à jour l'état
         await save_match_state({
             "phase": "confirm",
@@ -431,13 +435,14 @@ class TeamConfirmView(discord.ui.View):
             "message_id": self.parent_message.id if self.parent_message else None,
             "channel_id": self.parent_message.channel.id if self.parent_message else None,
             "name_cache": self.join_view.name_cache,
+            "display_cache": self.join_view.display_cache,
         })
 
     @discord.ui.button(
         label="✅ Accept",
-        style=discord.ButtonStyle.success, # type: ignore[arg-type]
+        style=discord.ButtonStyle.success,  # type: ignore[arg-type]
         row=0,
-        )
+    )
     async def accept(self, inter: Interaction, _):  # type: ignore[override]
         if inter.user != self.creator:
             return await inter.response.send_message("⛔ Organisateur uniquement.", ephemeral=True)
@@ -454,7 +459,7 @@ class TeamConfirmView(discord.ui.View):
             humans_b = [u for u in self.team_b if u < BOT_ID_START] or self.team_b
             cap_a = random.choice(humans_a)
             cap_b = random.choice(humans_b)
-            
+
             logger.info(f"👑 Capitaines random: {cap_a} (A) vs {cap_b} (B)")
         else:
             # ⟶ Il y a des bots : créateur = capitaine A
@@ -466,7 +471,7 @@ class TeamConfirmView(discord.ui.View):
                 self.team_a, self.team_b = self.team_b, self.team_a
                 pool_b = [u for u in self.team_b if u < BOT_ID_START] or self.team_b
                 cap_b = random.choice(pool_b)
-            
+
             logger.info(f"👑 Capitaines (avec bots): {cap_a} (A, créateur) vs {cap_b} (B)")
 
         await launch_ready_and_dispatch(
@@ -491,10 +496,10 @@ class TeamConfirmView(discord.ui.View):
 # ============================================================================
 class CaptainPickView(discord.ui.View):
     """Deux capitaines draftent leurs coéquipiers via un Select."""
-    
+
     def __init__(self, creator: discord.Member, cap_a: int, cap_b: int,
                  remaining: List[int], join_view: JoinView):
-        super().__init__(timeout=None) 
+        super().__init__(timeout=None)
         self.creator = creator
         self.cap_a = cap_a
         self.cap_b = cap_b
@@ -517,49 +522,60 @@ class CaptainPickView(discord.ui.View):
         self.add_item(self._btn_reroll())
         self.add_item(self._btn_cancel())
 
-   
+    def _get_display_name(self, uid: int) -> str:
+        """✅ Résout un display name lisible pour un uid (pour les selects)."""
+        # 1. Bots factices
+        if uid >= BOT_ID_START:
+            return self.join_view.display_cache.get(uid, f"Bot{uid - BOT_ID_START + 1}")
+
+        # 2. Guild member en cache Discord (le plus fiable)
+        if self.parent_message and self.parent_message.guild:
+            member = self.parent_message.guild.get_member(uid)
+            if member:
+                return member.display_name
+
+        # 3. display_cache (stocké au moment du join)
+        cached = self.join_view.display_cache.get(uid)
+        if cached:
+            return cached
+
+        # 4. Fallback lisible (jamais d'ID brut ni de mention)
+        return f"Joueur {uid}"
 
     def _make_options(self) -> List[discord.SelectOption]:
+        """✅ Construit les options du select avec des noms lisibles."""
         opts: List[discord.SelectOption] = []
         for uid in self.remaining:
-            if uid >= BOT_ID_START:
-                label = f"Bot{uid - BOT_ID_START + 1}"
-            else:
-                member = None
-                if self.parent_message and self.parent_message.guild:
-                    member = self.parent_message.guild.get_member(uid)
-                if member:
-                    label = member.display_name
-                else:
-                    raw = self.join_view.name_cache.get(uid, str(uid))
-                    label = raw.strip("<@!>") if raw.startswith("<@") else raw
-            opts.append(discord.SelectOption(label=label, value=str(uid)))
+            label = self._get_display_name(uid)
+            opts.append(discord.SelectOption(label=label[:100], value=str(uid)))
+
         if not opts:
             opts = [discord.SelectOption(label="(plus personne)", value="none", default=True)]
         return opts
 
     def _btn_reroll(self) -> discord.ui.Button:
         btn = discord.ui.Button(label="🔄 Reroll capitaines", style=discord.ButtonStyle.secondary, row=1)
+
         async def _cb(inter: Interaction):
             if inter.user != self.creator:
                 return await inter.response.send_message("⛔ Organisateur uniquement.", ephemeral=True)
-            
+
             all_ids = list(self.join_view.players)
             human_ids = [i for i in all_ids if i < BOT_ID_START]
             if len(human_ids) >= 2:
                 self.cap_a, self.cap_b = random.sample(human_ids, 2)
             else:
                 self.cap_a, self.cap_b = random.sample(all_ids, 2)
-            
+
             self.team_a, self.team_b = [self.cap_a], [self.cap_b]
             self.remaining = [p for p in all_ids if p not in (self.cap_a, self.cap_b)]
             self.turn = "A"
             self.select.options = self._make_options()
-            
+
             logger.info(f"🔄 Capitaines reroll: {self.cap_a} vs {self.cap_b}")
-            
+
             await inter.response.edit_message(embed=self.build_embed(inter.guild), view=self)
-            
+
             # ✅ Mettre à jour l'état
             await save_match_state({
                 "phase": "captain_pick",
@@ -574,29 +590,31 @@ class CaptainPickView(discord.ui.View):
                 "message_id": self.parent_message.id if self.parent_message else None,
                 "channel_id": self.parent_message.channel.id if self.parent_message else None,
                 "name_cache": self.join_view.name_cache,
+                "display_cache": self.join_view.display_cache,
             })
-        
+
         btn.callback = _cb  # type: ignore
         return btn
 
     def _btn_cancel(self) -> discord.ui.Button:
         btn = discord.ui.Button(label="❌ Annuler", style=discord.ButtonStyle.danger, row=1)
+
         async def _cb(inter: Interaction):
             if inter.user != self.creator:
                 return await inter.response.send_message("⛔ Organisateur uniquement.", ephemeral=True)
-            
+
             logger.info(f"❌ CaptainPick annulée par {inter.user.name}")
-            
+
             try:
                 await inter.response.edit_message(content="❌ Custom annulée.", embed=None, view=None)
             except Exception:
                 pass
-            
+
             await clear_match_state()
             inter.client._current_match = None  # type: ignore[attr-defined]
             self.stop()
             self.join_view.stop()
-        
+
         btn.callback = _cb  # type: ignore
         return btn
 
@@ -604,15 +622,15 @@ class CaptainPickView(discord.ui.View):
         capA_mention = f"<@{self.cap_a}>"
         capB_mention = f"<@{self.cap_b}>"
         title = "🧢 Captains Pick — sélection des équipes"
-        desc = f"Tour : **{capA_mention if self.turn=='A' else capB_mention}**"
+        desc = f"Tour : **{capA_mention if self.turn == 'A' else capB_mention}**"
 
         embed = discord.Embed(
             title=title,
             description=desc,
             colour=discord.Colour.from_rgb(66, 133, 244),
         )
-        
-        # ✅ Utiliser le helper centralisé
+
+        # ✅ Utiliser le helper centralisé (mentions pour les embeds)
         embed.add_field(
             name="🟦 TEAM A",
             value=format_team_list(self.team_a, self.cap_a, guild, self.join_view.name_cache),
@@ -625,8 +643,9 @@ class CaptainPickView(discord.ui.View):
             inline=True
         )
 
+        # ✅ Restants : utiliser name_cache (mentions) pour l'embed
         remaining_list = [
-            self.join_view.name_cache.get(uid, f"<@{uid}>") 
+            self.join_view.name_cache.get(uid, f"<@{uid}>")
             for uid in self.remaining
         ] or ["—"]
         embed.add_field(name="🧾 Restants", value="\n".join(remaining_list), inline=False)
@@ -672,7 +691,7 @@ class CaptainPickView(discord.ui.View):
         # Fin si 5v5
         if len(self.team_a) == 5 and len(self.team_b) == 5:
             logger.info("✅ Draft terminé (5v5)")
-            
+
             try:
                 await inter.response.edit_message(embed=self.build_embed(inter.guild), view=None)
             except Exception:
@@ -697,7 +716,7 @@ class CaptainPickView(discord.ui.View):
         # Sinon, rafraîchir
         self.select.options = self._make_options()
         await inter.response.edit_message(embed=self.build_embed(inter.guild), view=self)
-        
+
         # ✅ Mettre à jour l'état
         await save_match_state({
             "phase": "captain_pick",
@@ -712,6 +731,7 @@ class CaptainPickView(discord.ui.View):
             "message_id": self.parent_message.id if self.parent_message else None,
             "channel_id": self.parent_message.channel.id if self.parent_message else None,
             "name_cache": self.join_view.name_cache,
+            "display_cache": self.join_view.display_cache,
         })
 
 
@@ -728,17 +748,17 @@ async def launch_ready_and_dispatch(
     bo: int,
 ):
     """✅ Affiche VS, déplace vocal, lance READY, puis dispatch draft."""
-    
+
     # Embed VS
     vs = discord.Embed(
         title="⚔️  Équipes prêtes !",
         colour=discord.Colour.from_rgb(30, 136, 229),
     )
-    
+
     # ✅ Batch fetch members
     guild = inter.guild
     members = await get_members_batch(guild, team_a + team_b) if guild else {}
-    
+
     vs.add_field(
         name="🟦  **TEAM A**",
         value=format_team_list(team_a, cap_a, guild),
@@ -750,7 +770,7 @@ async def launch_ready_and_dispatch(
         value=format_team_list(team_b, cap_b, guild),
         inline=True
     )
-    
+
     if guild and guild.icon:
         vs.set_thumbnail(url=guild.icon.url)
     vs.set_footer(text="👑 = capitaine  •  Bonne chance & have fun !")
@@ -836,8 +856,6 @@ class SetupView(discord.ui.View):
         self.captain_pick: bool = False
         self.done = asyncio.Event()
 
-    
-
     @discord.ui.select(
         placeholder="Bo1",
         options=[discord.SelectOption(label=f"Bo{i}", value=str(i)) for i in (1, 3, 5)],
@@ -904,23 +922,23 @@ class Custom5v5Cog(commands.Cog):
     async def on_ready(self):
         """✅ Restaurer la custom si elle existe après restart."""
         state = await load_match_state()
-        
+
         if not state:
             logger.info("Aucune custom à restaurer")
             return
-        
+
         logger.info(f"♻️ Restauration custom en phase '{state.get('phase')}'")
-        
+
         try:
             channel = self.bot.get_channel(state["channel_id"])
             if not channel:
                 logger.warning("Channel introuvable, abandon restauration")
                 await clear_match_state()
                 return
-            
+
             message = await channel.fetch_message(state["message_id"])
             creator = await self.bot.fetch_user(state["creator_id"])
-            
+
             # ✅ Restaurer selon la phase
             if state["phase"] == "join":
                 await self._restore_join_phase(state, message, creator)
@@ -933,7 +951,7 @@ class Custom5v5Cog(commands.Cog):
             else:
                 logger.warning(f"Phase inconnue: {state['phase']}")
                 await clear_match_state()
-            
+
         except discord.NotFound:
             logger.warning("Message introuvable, abandon restauration")
             await clear_match_state()
@@ -949,16 +967,17 @@ class Custom5v5Cog(commands.Cog):
             fearless=state["fearless"],
             captain_pick=state["captain_pick"]
         )
-        
+
         join_view.players = set(state["players"])
         join_view.name_cache = state["name_cache"]
+        join_view.display_cache = state.get("display_cache", {})  # ✅ restaurer display_cache
         join_view.message = message
         join_view.embed = message.embeds[0] if message.embeds else discord.Embed()
-        
+
         # Réattacher la vue au message
         await message.edit(view=join_view)
         await join_view.refresh()
-        
+
         self.bot._current_match = join_view  # type: ignore[attr-defined]
         logger.info(f"✅ Custom restaurée avec {len(join_view.players)}/10 joueurs")
 
@@ -1038,7 +1057,7 @@ class Custom5v5Cog(commands.Cog):
             else:
                 msg = "❌ Une erreur est survenue."
                 logger.error(f"Erreur commande /5v5: {err}", exc_info=True)
-            
+
             if inter.response.is_done():
                 await inter.followup.send(msg, ephemeral=True)
             else:
@@ -1049,4 +1068,3 @@ class Custom5v5Cog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Custom5v5Cog(bot))
-
