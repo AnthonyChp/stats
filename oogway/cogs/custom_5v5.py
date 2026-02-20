@@ -981,6 +981,36 @@ class Custom5v5Cog(commands.Cog):
         self.bot._current_match = join_view  # type: ignore[attr-defined]
         logger.info(f"✅ Custom restaurée avec {len(join_view.players)}/10 joueurs")
 
+
+    @app_commands.command(
+    name="cancel-custom",
+    description="Force l'annulation de la custom en cours",
+    )
+    @app_commands.guilds(GUILD_ID) if GUILD_ID else (lambda f: f)  # type: ignore
+    @app_commands.checks.has_role(settings.ORGANIZER_ROLE_ID)
+    async def cancel_custom(self, inter: Interaction):
+        if self.bot._current_match is None and not await load_match_state():  # type: ignore[attr-defined]
+            return await inter.response.send_message("ℹ️ Aucune custom active.", ephemeral=True)
+    
+        # Supprimer le message si possible
+        match = self.bot._current_match  # type: ignore[attr-defined]
+        if match and hasattr(match, "message") and match.message:
+            try:
+                await match.message.delete()
+            except Exception:
+                pass
+        
+        if match:
+            match.stop()
+    
+        await clear_match_state()
+        self.bot._current_match = None  # type: ignore[attr-defined]
+    
+        logger.info(f"🛑 Custom force-cancel par {inter.user.name}")
+        await inter.response.send_message("✅ Custom annulée de force.", ephemeral=True)
+
+
+    
     @app_commands.command(
         name="5v5",
         description="Créer une custom 5 v 5",
@@ -1068,3 +1098,4 @@ class Custom5v5Cog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Custom5v5Cog(bot))
+
