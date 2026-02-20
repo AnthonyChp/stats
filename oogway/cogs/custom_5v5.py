@@ -133,7 +133,7 @@ async def get_members_batch(guild: discord.Guild, uids: List[int]) -> Dict[int, 
 # ============================================================================
 class JoinView(discord.ui.View):
     def __init__(self, creator: discord.Member, bo: int, fearless: bool, captain_pick: bool):
-        super().__init__(timeout=1800)  # ✅ 30 min timeout
+        super().__init__(timeout=None) 
         self.creator: discord.Member = creator
         self.bo, self.fearless = bo, fearless
         self.captain_pick = captain_pick
@@ -143,22 +143,6 @@ class JoinView(discord.ui.View):
         self.message: Optional[discord.Message] = None
         self.embed: Optional[discord.Embed] = None
 
-    # ───────────────────────────── Timeout handler ────────────────
-    async def on_timeout(self):
-        """✅ Cleanup automatique après 30 min d'inactivité."""
-        logger.info("⏰ Custom expirée (timeout 30 min)")
-        
-        if self.message:
-            try:
-                await self.message.edit(
-                    content="⏰ **Custom expirée** — 30 minutes d'inactivité",
-                    embed=None,
-                    view=None
-                )
-            except Exception as e:
-                logger.warning(f"Impossible d'éditer le message: {e}")
-        
-        await clear_match_state()
 
     # ───────────────────────────── Error handler ──────────────────
     async def on_error(self, interaction: Interaction, error: Exception, item):
@@ -386,26 +370,14 @@ class TeamConfirmView(discord.ui.View):
     """Affiché publiquement ; seul l'organisateur clique."""
 
     def __init__(self, creator, team_a, team_b, join_view: JoinView):
-        super().__init__(timeout=1800)  # ✅ 30 min timeout
+        super().__init__(timeout=None) 
         self.creator = creator
         self.team_a: List[int] = team_a
         self.team_b: List[int] = team_b
         self.join_view: JoinView = join_view
         self.parent_message: Optional[discord.Message] = None
 
-    async def on_timeout(self):
-        """✅ Cleanup après timeout."""
-        logger.info("⏰ TeamConfirmView expirée")
-        if self.parent_message:
-            try:
-                await self.parent_message.edit(
-                    content="⏰ **Temps écoulé** — Custom expirée",
-                    embed=None,
-                    view=None
-                )
-            except Exception:
-                pass
-        await clear_match_state()
+
 
     def build_embed(self, guild: discord.Guild) -> discord.Embed:
         embed = discord.Embed(
@@ -522,7 +494,7 @@ class CaptainPickView(discord.ui.View):
     
     def __init__(self, creator: discord.Member, cap_a: int, cap_b: int,
                  remaining: List[int], join_view: JoinView):
-        super().__init__(timeout=1800)  # ✅ 30 min timeout
+        super().__init__(timeout=None) 
         self.creator = creator
         self.cap_a = cap_a
         self.cap_b = cap_b
@@ -545,19 +517,7 @@ class CaptainPickView(discord.ui.View):
         self.add_item(self._btn_reroll())
         self.add_item(self._btn_cancel())
 
-    async def on_timeout(self):
-        """✅ Cleanup après timeout."""
-        logger.info("⏰ CaptainPickView expirée")
-        if self.parent_message:
-            try:
-                await self.parent_message.edit(
-                    content="⏰ **Temps écoulé** — Custom expirée",
-                    embed=None,
-                    view=None
-                )
-            except Exception:
-                pass
-        await clear_match_state()
+   
 
     def _make_options(self) -> List[discord.SelectOption]:
         opts: List[discord.SelectOption] = []
@@ -876,11 +836,7 @@ class SetupView(discord.ui.View):
         self.captain_pick: bool = False
         self.done = asyncio.Event()
 
-    async def on_timeout(self):
-        """✅ Cleanup après timeout."""
-        logger.info("⏰ SetupView expirée")
-        self.canceled = True
-        self.done.set()
+    
 
     @discord.ui.select(
         placeholder="Bo1",
@@ -1093,3 +1049,4 @@ class Custom5v5Cog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Custom5v5Cog(bot))
+
