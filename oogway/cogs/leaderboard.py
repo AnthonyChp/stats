@@ -150,7 +150,7 @@ class LeaderboardView(discord.ui.View):
 
 class LeaderboardCog(commands.Cog):
     """Interactive LP leaderboard with progression tracking, streaks, and server stats."""
-    CACHE_TTL = 60  # FIX: Réduit à 60s pour éviter les lenteurs de pagination
+    CACHE_TTL = 300  # ✅ 5 minutes au lieu de 60s
     
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -161,9 +161,14 @@ class LeaderboardCog(commands.Cog):
         self.lb_message: Optional[discord.Message] = None
         self.view: Optional[LeaderboardView] = None
         self._rank_cache: dict[Tuple[str,int], Tuple[float, Tuple[str,str,int,int,int,int]]] = {}
-        # FIX: Cache global des entrées pour éviter de refetch à chaque page
-        self._entries_cache: Optional[Tuple[float, List]] = None
-        self._entries_cache_ttl = 60  # 1 minute
+        
+        # ✅ Cache global des entrées + stats pré-calculées
+        self._entries_cache: Dict[int, Optional[Tuple[float, Dict]]] = {420: None, 440: None}
+        self._entries_cache_ttl = 300  # 5 minutes
+        
+        # ✅ Nouveau: Cache des Discord users
+        self._user_cache: Dict[int, Tuple[float, str, str]] = {}
+        self._user_cache_ttl = 3600  # 1 heure
 
     @staticmethod
     def get_wr_label(wr: int) -> str:
@@ -215,7 +220,7 @@ class LeaderboardCog(commands.Cog):
         if not self.lb_message:
             return
         # Invalider le cache des entrées pour forcer un refresh
-        self._entries_cache = None
+        self._entries_cache = {420: None, 440: None}
         embed = await self.build_embed(self.view.queue_index, self.view.page, self.view.sort_by)
         try:
             await self.lb_message.edit(embed=embed)
@@ -253,18 +258,49 @@ class LeaderboardCog(commands.Cog):
     async def before_track(self):
         await self.bot.wait_until_ready()
 
-    async def _get_entries(self, queue_id: int, force_refresh: bool = False) -> List[Tuple]:
+    async def _get_discord_user(self, discord_id: int) -> Tuple[str, Optional[str]]:
+        """✅ Cache des Discord users pour éviter les fetch répétés."""
+        now = time.time()
+        
+        if discord_id in self._user_cache:
+            ts, name, avatar = self._user_cache[discord_id]
+            if now - ts < self._user_cache_ttl:
+                return name, avatar
+        
+        try:
+            du = await self.bot.fetch_user(discord_id)
+            name = du.display_name
+            avatar = du.display_avatar.url
+            self._user_cache[discord_id] = (now, name, avatar)
+            return name, avatar
+        except Exception as e:
+            log.warning(f"Failed to fetch Discord user {discord_id}: {e}")
+            return f"User#{discord_id}", None
+
+    async def _prefetch_discord_users(self, entries: List[Tuple]):
+        """✅ Pré-fetch tous les Discord users en parallèle."""
+        discord_ids = list(set(entry[0].discord_id for entry in entries))
+        
+        async def fetch_one(discord_id: int):
+            await self._get_discord_user(discord_id)
+        
+        await asyncio.gather(*(fetch_one(did) for did in discord_ids), return_exceptions=True)
+
+    async def _get_entries(self, queue_id: int, force_refresh: bool = False) -> Dict:
         """
-        FIX: Cache global des entrées pour éviter de refetch à chaque changement de page.
-        Retourne: List[(User, tier, div, lp, wr, wins, losses, delta_lp, streak, prev_pos)]
+        ✅ Cache global avec stats pré-calculées.
+        Retourne: Dict avec 'entries', 'server_stats', 'distribution', 'records'
         """
         now = time.time()
         
         # Utiliser le cache si disponible et pas expiré
-        if not force_refresh and self._entries_cache is not None:
-            cache_ts, cached_entries = self._entries_cache
+        if not force_refresh and self._entries_cache[queue_id] is not None:
+            cache_ts, cached_data = self._entries_cache[queue_id]
             if now - cache_ts < self._entries_cache_ttl:
-                return cached_entries
+                log.debug(f"Using cached data for queue {queue_id}")
+                return cached_data
+        
+        log.info(f"♻️ Refreshing leaderboard cache for queue {queue_id}")
         
         users = self.db.query(User).all()
         entries: List[Tuple] = []
@@ -274,25 +310,64 @@ class LeaderboardCog(commands.Cog):
                 try:
                     tier, div, lp, wr, wins, losses = await self._get_rank(u, queue_id)
                     if tier in TIERS:
-                        # Récupérer la progression mensuelle
                         delta_lp = await self._get_monthly_delta(u, queue_id, tier, div, lp)
-                        
-                        # Récupérer le streak
                         streak_count, is_win = await self._get_streak(u, queue_id)
-                        
-                        # Récupérer la position précédente (pour le change indicator)
                         prev_pos = await self._get_previous_position(u, queue_id)
-                        
                         entries.append((u, tier, div, lp, wr, wins, losses, delta_lp, streak_count, is_win, prev_pos))
                 except Exception as e:
                     log.warning(f"Fetch error for {u.discord_id}: {e}")
 
         await asyncio.gather(*(fetch(u) for u in users), return_exceptions=True)
         
-        # Sauvegarder dans le cache
-        self._entries_cache = (now, entries)
+        if not entries:
+            # Retourner des données vides si aucun joueur
+            cached_data = {
+                'entries': [],
+                'server_stats': {
+                    "total_players": 0,
+                    "avg_tier": "N/A",
+                    "avg_wr": 0,
+                    "best_streak_player": None,
+                    "best_streak": 0,
+                    "top_climber": None,
+                    "top_climb": 0
+                },
+                'distribution': {},
+                'records': {
+                    "highest_rank": None,
+                    "best_wr": None,
+                    "most_games": None
+                }
+            }
+            self._entries_cache[queue_id] = (now, cached_data)
+            return cached_data
         
-        return entries
+        # ✅ Trier les entries
+        entries.sort(key=lambda e: (TIERS.index(e[1]), DIV_WEIGHTS[e[2]], e[3]), reverse=True)
+        
+        # ✅ Pré-fetch tous les Discord users en parallèle
+        await self._prefetch_discord_users(entries)
+        
+        # ✅ Pré-calculer toutes les stats UNE SEULE FOIS
+        server_stats = await self._compute_server_stats(entries)
+        distribution = await self._compute_distribution(entries)
+        records = await self._compute_records(entries)
+        
+        # Sauvegarder les positions pour le prochain calcul
+        await self._save_positions(entries, queue_id)
+        
+        # Sauvegarder dans le cache
+        cached_data = {
+            'entries': entries,
+            'server_stats': server_stats,
+            'distribution': distribution,
+            'records': records
+        }
+        
+        self._entries_cache[queue_id] = (now, cached_data)
+        log.info(f"✅ Cache refreshed with {len(entries)} entries for queue {queue_id}")
+        
+        return cached_data
 
     async def _get_monthly_delta(self, user: User, queue_id: int, current_tier: str, current_div: str, current_lp: int) -> int:
         """Calcule le delta LP depuis le début du mois."""
@@ -320,10 +395,12 @@ class LeaderboardCog(commands.Cog):
             return current_lp - start_lp
         
         # Si différent, estimation grossière
-        start_idx = TIERS.index(start_tier) * 400 + DIV_WEIGHTS.get(start_div, 0) * 100 + start_lp
-        current_idx = TIERS.index(current_tier) * 400 + DIV_WEIGHTS.get(current_div, 0) * 100 + current_lp
-        
-        return current_idx - start_idx
+        try:
+            start_idx = TIERS.index(start_tier) * 400 + DIV_WEIGHTS.get(start_div, 0) * 100 + start_lp
+            current_idx = TIERS.index(current_tier) * 400 + DIV_WEIGHTS.get(current_div, 0) * 100 + current_lp
+            return current_idx - start_idx
+        except (ValueError, KeyError):
+            return 0
 
     async def _get_streak(self, user: User, queue_id: int) -> Tuple[int, bool]:
         """Récupère le streak actuel du joueur."""
@@ -361,8 +438,12 @@ class LeaderboardCog(commands.Cog):
     async def build_embed(self, queue_idx: int, page: int, sort_by: str) -> discord.Embed:
         queue_id = QUEUE_ORDERS[queue_idx]
         
-        # FIX: Utiliser le cache global des entrées
-        entries = await self._get_entries(queue_id)
+        # ✅ Récupérer depuis le cache (entries déjà triées + stats pré-calculées)
+        cached_data = await self._get_entries(queue_id)
+        entries = cached_data['entries']
+        server_stats = cached_data['server_stats']
+        distribution = cached_data['distribution']
+        records = cached_data['records']
         
         if not entries:
             # Cas où aucune entrée (serveur vide ou erreurs)
@@ -373,16 +454,6 @@ class LeaderboardCog(commands.Cog):
                 timestamp=dt.datetime.now(dt.timezone.utc)
             )
             return embed
-
-        # Tri
-        if sort_by == "LP":
-            key_fn = lambda e: (TIERS.index(e[1]), DIV_WEIGHTS[e[2]], e[3])
-        else:
-            key_fn = lambda e: (TIERS.index(e[1]), DIV_WEIGHTS[e[2]], e[4])
-        entries.sort(key=key_fn, reverse=True)
-        
-        # Sauvegarder les positions actuelles
-        await self._save_positions(entries, queue_id)
 
         per_page = 10
         total_pages = max(math.ceil(len(entries) / per_page), 1)
@@ -399,20 +470,14 @@ class LeaderboardCog(commands.Cog):
             timestamp=dt.datetime.now(dt.timezone.utc)
         )
 
-        # FIX: Vérifier que slice_ n'est pas vide avant d'accéder
         if slice_:
             for idx, entry in enumerate(slice_, start=page * per_page + 1):
                 user, tier, div, lp, wr, wins, losses, delta_lp, streak, is_win, prev_pos = entry
                 
                 medal = MEDALS[idx - 1] if idx <= 3 else f"#{idx}"
                 
-                try:
-                    du = await self.bot.fetch_user(user.discord_id)
-                    name = du.display_name
-                    avatar = du.display_avatar.url
-                except:
-                    name = user.puuid[:6]
-                    avatar = None
+                # ✅ Utiliser le cache Discord user (pas de fetch !)
+                name, avatar = await self._get_discord_user(user.discord_id)
                 
                 # Position change indicator
                 if prev_pos:
@@ -463,13 +528,11 @@ class LeaderboardCog(commands.Cog):
                 
                 embed.add_field(name=field_name, value=field_value, inline=False)
                 
-                # FIX: Avatar du top player de la page
+                # Avatar du top player de la page
                 if idx == page * per_page + 1 and avatar:
                     embed.set_author(name="Leaderboard", icon_url=avatar)
 
-        # === STATS DU SERVEUR ===
-        server_stats = await self._compute_server_stats(entries)
-        
+        # ✅ Utiliser les stats pré-calculées (pas de recalcul !)
         stats_lines = [
             f"**Joueurs:** {server_stats['total_players']}",
             f"**Rank moyen:** {server_stats['avg_tier']}",
@@ -489,7 +552,6 @@ class LeaderboardCog(commands.Cog):
         )
         
         # === DISTRIBUTION ===
-        distribution = await self._compute_distribution(entries)
         dist_lines = []
         for tier_name, count in distribution.items():
             if count > 0:
@@ -504,8 +566,6 @@ class LeaderboardCog(commands.Cog):
         )
         
         # === RECORDS ===
-        records = await self._compute_records(entries)
-        
         records_lines = []
         if records['highest_rank']:
             records_lines.append(f"**Plus haut:** {records['highest_rank']}")
@@ -554,11 +614,8 @@ class LeaderboardCog(commands.Cog):
             user, tier, div, lp, wr, wins, losses, delta_lp, streak, is_win, prev_pos = entry
             if streak > best_streak:
                 best_streak = streak
-                try:
-                    du = await self.bot.fetch_user(user.discord_id)
-                    best_streak_player = du.display_name
-                except:
-                    best_streak_player = user.puuid[:6]
+                # ✅ Utiliser le cache Discord user
+                best_streak_player, _ = await self._get_discord_user(user.discord_id)
         
         # Top climber du mois
         top_climb = 0
@@ -567,11 +624,8 @@ class LeaderboardCog(commands.Cog):
             user, tier, div, lp, wr, wins, losses, delta_lp, streak, is_win, prev_pos = entry
             if delta_lp > top_climb:
                 top_climb = delta_lp
-                try:
-                    du = await self.bot.fetch_user(user.discord_id)
-                    top_climber = du.display_name
-                except:
-                    top_climber = user.puuid[:6]
+                # ✅ Utiliser le cache Discord user
+                top_climber, _ = await self._get_discord_user(user.discord_id)
         
         return {
             "total_players": len(entries),
@@ -604,25 +658,17 @@ class LeaderboardCog(commands.Cog):
         
         # Plus haut rank
         highest = entries[0]  # Déjà trié par rank
-        try:
-            du = await self.bot.fetch_user(highest[0].discord_id)
-            highest_name = du.display_name
-        except:
-            highest_name = highest[0].puuid[:6]
+        highest_name, _ = await self._get_discord_user(highest[0].discord_id)
         highest_rank = f"{highest_name} ({highest[1]} {highest[2]})"
         
-        # Meilleur WR (minimum 10 games) - FIX: chercher vraiment le max WR
+        # Meilleur WR (minimum 10 games)
         qualified = [e for e in entries if (e[5] + e[6]) >= 10]
         if qualified:
             # Trouver le WR maximum
             best_wr_value = max(e[4] for e in qualified)
             # Récupérer l'entrée correspondante (la première si égalité)
             best_wr_entry = next(e for e in qualified if e[4] == best_wr_value)
-            try:
-                du = await self.bot.fetch_user(best_wr_entry[0].discord_id)
-                best_wr_name = du.display_name
-            except:
-                best_wr_name = best_wr_entry[0].puuid[:6]
+            best_wr_name, _ = await self._get_discord_user(best_wr_entry[0].discord_id)
             best_wr = f"{best_wr_name} ({best_wr_entry[4]}%)"
         else:
             best_wr = None
@@ -631,11 +677,7 @@ class LeaderboardCog(commands.Cog):
         total_games_values = [e[5] + e[6] for e in entries]
         max_games = max(total_games_values)
         most_games_entry = next(e for e in entries if (e[5] + e[6]) == max_games)
-        try:
-            du = await self.bot.fetch_user(most_games_entry[0].discord_id)
-            most_games_name = du.display_name
-        except:
-            most_games_name = most_games_entry[0].puuid[:6]
+        most_games_name, _ = await self._get_discord_user(most_games_entry[0].discord_id)
         most_games = f"{most_games_name} ({max_games} games)"
         
         return {
@@ -646,7 +688,7 @@ class LeaderboardCog(commands.Cog):
 
     @with_retry()
     async def _get_rank(self, user: User, queue_id: int) -> Tuple[str, str, int, int, int, int]:
-        """Get player rank with caching - now fully async."""
+        """Get player rank with caching - fully async."""
         key = (user.puuid, queue_id)
         now = time.time()
         if key in self._rank_cache:
@@ -654,7 +696,7 @@ class LeaderboardCog(commands.Cog):
             if now - ts < self.CACHE_TTL:
                 return data
 
-        # Now fully async
+        # Fully async
         summ = await self.riot.get_summoner_by_puuid(user.region, user.puuid)
         entries = await self.riot.get_league_entries_by_puuid(user.region, user.puuid)
 
