@@ -1,14 +1,16 @@
 # oogway/cogs/cs.py — CS2 Match Tracker via Leetify API
 # ============================================================================
-# Polle l'API Leetify pour détecter les nouvelles parties CS2 et poster
-# un embed détaillé dans le channel défini dans le .env.
-#
 # Variables .env requises :
-#   LEETIFY_API_KEY       — clé API (https://leetify.com/app/developer)
-#   CS_MATCH_CHANNEL_ID   — ID du salon Discord où poster les matchs
+#   LEETIFY_API_KEY       — clé API Leetify
+#   CS_MATCH_CHANNEL_ID   — salon Discord où poster les matchs
 #   CS_STEAM_IDS          — Steam64 IDs fixes (séparés par des virgules)
-#   CS_POLL_INTERVAL      — intervalle de polling en secondes (défaut: 300)
-#   STEAM_API_KEY         — clé Steam (pour résoudre les vanity URLs)
+#   CS_POLL_INTERVAL      — intervalle polling en secondes (défaut: 300)
+#   STEAM_API_KEY         — clé Steam pour résoudre les URLs vanity
+#
+# Endpoints utilisés :
+#   GET /v3/profile?steam64_id=...          → profil joueur
+#   GET /v3/profile/matches?steam64_id=...  → liste des matchs (avec stats)
+#   GET /v2/matches/{id}                    → détail match (tous joueurs)
 #
 # Commandes :
 #   /cs-link <steam>     — lier son compte Steam (ID ou URL)
@@ -36,21 +38,16 @@ from oogway.database import Base, SessionLocal
 
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────────── Constantes API ───────────────────────────────
 LEETIFY_BASE = "https://api-public.cs-prod.leetify.com"
+
 
 # ─────────────────────────────── Modèle DB ────────────────────────────────────
 class SteamLink(Base):
-    """Lien Discord ↔ Steam64 pour le tracker CS2."""
     __tablename__ = "steam_links"
-
     discord_id = Column(String, primary_key=True, index=True)
     steam64_id = Column(String, nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-    def __repr__(self):
-        return f"<SteamLink discord={self.discord_id} steam={self.steam64_id}>"
 
 
 # ─────────────────────────────── Helpers DB ───────────────────────────────────
@@ -98,25 +95,15 @@ _STEAM64_RE = re.compile(r"^7656119\d{10}$")
 
 
 async def resolve_steam_input(raw: str) -> Optional[str]:
-    """
-    Résout une entrée utilisateur en Steam64 ID.
-    Accepte :
-      - Steam64 ID direct              : 76561198XXXXXXXXX
-      - URL profil numérique           : steamcommunity.com/profiles/76561198XXXXXXXXX
-      - URL profil vanity              : steamcommunity.com/id/monpseudo
-    """
     raw = raw.strip().rstrip("/")
 
-    # Cas 1 : ID direct
     if _STEAM64_RE.match(raw):
         return raw
 
-    # Cas 2 : URL avec Steam64 dedans
     m = re.search(r"steamcommunity\.com/profiles/(\d{15,})", raw)
     if m and _STEAM64_RE.match(m.group(1)):
         return m.group(1)
 
-    # Cas 3 : URL vanity → Steam Web API
     m = re.search(r"steamcommunity\.com/id/([^/?\s]+)", raw)
     if m:
         vanity = m.group(1)
@@ -159,12 +146,20 @@ MAP_NAMES: dict[str, str] = {
     "de_train":    "Train",
 }
 
+# data_source → label lisible
+SOURCE_LABELS: dict[str, str] = {
+    "matchmaking":            "Compétitif Premier",
+    "matchmaking_competitive": "Compétitif",
+    "matchmaking_wingman":    "Wingman",
+    "renown":                 "Renown",
+    "faceit":                 "FACEIT",
+}
+
 
 # ─────────────────────────────── Client Leetify ───────────────────────────────
 class LeetifyClient:
     """
-    Wrapper pour l'API publique Leetify v3.
-    Auth : Authorization: Bearer <key>  (ou header _leetify_key: <key>)
+    Auth : _leetify_key: <key>
     Base : https://api-public.cs-prod.leetify.com
     """
 
@@ -188,12 +183,11 @@ class LeetifyClient:
             await self._session.close()
 
     async def _get(self, path: str, params: Optional[dict] = None):
-        """GET vers LEETIFY_BASE + path avec query params optionnels."""
         s = await self._sess()
         url = f"{LEETIFY_BASE}{path}"
         try:
             async with s.get(url, params=params) as r:
-                logger.debug(f"Leetify {url} params={params} → HTTP {r.status}")
+                logger.debug(f"Leetify {url} params={params} → {r.status}")
                 if r.status == 200:
                     return await r.json()
                 if r.status == 401:
@@ -205,29 +199,30 @@ class LeetifyClient:
             logger.error(f"Leetify GET {url}: {e}")
         return None
 
-    # ── Endpoints ──────────────────────────────────────────────────
     async def validate_key(self) -> bool:
-        """Valide la clé API. Retourne True si valide."""
         result = await self._get("/api-key/validate")
         return result is not None
 
     async def get_profile(self, steam64_id: str) -> Optional[dict]:
-        """GET /v3/profile?steam64_id=..."""
+        """GET /v3/profile?steam64_id=... → {name, steam64_id, ranks, rating, stats, recent_matches, ...}"""
         return await self._get("/v3/profile", params={"steam64_id": steam64_id})
 
     async def get_matches(self, steam64_id: str) -> list[dict]:
-        """GET /v3/profile/matches?steam64_id=... (à adapter selon la doc réelle)"""
+        """
+        GET /v3/profile/matches?steam64_id=...
+        → liste de matchs, chaque match contient déjà stats[] du joueur
+        Structure : {id, finished_at, map_name, outcome, score[], data_source, stats[{steam64_id, ...}]}
+        """
         data = await self._get("/v3/profile/matches", params={"steam64_id": steam64_id})
         if isinstance(data, list):
             return data
-        # Certaines réponses encapsulent dans un objet
         if isinstance(data, dict):
             return data.get("matches") or data.get("data") or []
         return []
 
-    async def get_match(self, match_id: str) -> Optional[dict]:
-        """GET /v3/match/{match_id}"""
-        return await self._get(f"/v3/match/{match_id}")
+    async def get_match_detail(self, match_id: str) -> Optional[dict]:
+        """GET /v2/matches/{id} → même structure mais avec TOUS les joueurs dans stats[]"""
+        return await self._get(f"/v2/matches/{match_id}")
 
 
 # ─────────────────────────────── Helpers formatting ──────────────────────────
@@ -238,6 +233,13 @@ def _f(val, d: float = 0.0) -> float:
 def _i(val, d: int = 0) -> int:
     try: return int(val) if val is not None else d
     except: return d
+
+def _pct(val) -> str:
+    """Convertit 0.2636 → '26%'  ou  26.3 → '26%' selon le contexte."""
+    v = _f(val)
+    if v <= 1.0:
+        v *= 100
+    return f"{v:.0f}%"
 
 def _score_icon(s: float) -> str:
     r = round(s)
@@ -251,84 +253,135 @@ def _map_name(raw: str) -> str:
 def _rank_str(premier) -> str:
     return (f"{int(premier):,}".replace(",", " ") + " pts") if premier else "—"
 
+def _ts(raw: Optional[str]) -> str:
+    if not raw:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return f"<t:{int(dt.timestamp())}:R>"
+    except Exception:
+        return "—"
+
+def _extract_player_stats(match: dict, steam64_id: str) -> Optional[dict]:
+    """Trouve les stats du joueur cible dans match['stats'][]."""
+    for p in match.get("stats", []):
+        if str(p.get("steam64_id", "")) == str(steam64_id):
+            return p
+    return None
+
+def _match_scores(match: dict) -> tuple[int, int]:
+    """
+    Retourne (score_team_joueur, score_ennemi) depuis team_scores[].
+    On ne connaît pas l'équipe du joueur ici, donc on retourne score[0], score[1]
+    depuis recent_matches (format: score: [13, 5]).
+    Pour /v2/matches, on utilise team_scores[].
+    """
+    # Format recent_matches : "score": [13, 5]
+    score_list = match.get("score")
+    if isinstance(score_list, list) and len(score_list) >= 2:
+        return score_list[0], score_list[1]
+    # Format /v2/matches : team_scores: [{team_number, score}, ...]
+    team_scores = match.get("team_scores", [])
+    if len(team_scores) >= 2:
+        return team_scores[0]["score"], team_scores[1]["score"]
+    return 0, 0
+
 
 def build_match_embed(
     player_name: str,
-    player_avatar: Optional[str],
     steam_id: str,
     match: dict,
     stats: dict,
 ) -> discord.Embed:
-    won       = stats.get("won")
-    score_s   = _i(stats.get("teamScore"))
-    score_o   = _i(stats.get("enemyScore"))
-    color     = COLOR_WIN if won is True else (COLOR_LOSS if won is False else COLOR_DRAW)
-    result    = "🏆 Victoire" if won is True else ("💀 Défaite" if won is False else "🤝 Nul")
-    map_name  = _map_name(match.get("mapName", ""))
-    mode      = match.get("gameMode", "Unknown").replace("_", " ").title()
+    # ── Résultat ──────────────────────────────────────────────────
+    outcome = match.get("outcome") or ("win" if stats.get("rounds_won", 0) > stats.get("rounds_lost", 0) else "loss")
+    color   = COLOR_WIN if outcome == "win" else (COLOR_LOSS if outcome == "loss" else COLOR_DRAW)
+    result  = "🏆 Victoire" if outcome == "win" else ("💀 Défaite" if outcome == "loss" else "🤝 Nul")
 
-    ts = "—"
-    raw_date = match.get("gameFinishedAt") or match.get("finishedAt")
-    if raw_date:
-        try:
-            dt = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
-            ts = f"<t:{int(dt.timestamp())}:R>"
-        except Exception:
-            pass
+    # ── Scores ────────────────────────────────────────────────────
+    score_a, score_b = _match_scores(match)
+    rounds_won  = _i(stats.get("rounds_won"))
+    rounds_lost = _i(stats.get("rounds_lost"))
+    # Priorité au score du joueur (rounds_won / rounds_lost plus fiable)
+    if rounds_won or rounds_lost:
+        score_str = f"{rounds_won} – {rounds_lost}"
+    else:
+        score_str = f"{score_a} – {score_b}"
 
-    kills   = _i(stats.get("kills"))
-    deaths  = _i(stats.get("deaths"))
-    assists = _i(stats.get("assists"))
-    hs_pct  = _f(stats.get("headshotPercentage")) * 100
-    adr     = _f(stats.get("adr"))
-    rating  = _f(stats.get("leetifyRating"))
-    aim     = _f(stats.get("aimRating"))
-    util    = _f(stats.get("utilityRating"))
-    pos     = _f(stats.get("positioningRating"))
-    ct      = _f(stats.get("ctRating"))
-    t       = _f(stats.get("tRating"))
-    premier = stats.get("premierRating")
+    # ── Infos match ───────────────────────────────────────────────
+    map_name  = _map_name(match.get("map_name", ""))
+    mode      = SOURCE_LABELS.get(match.get("data_source", ""), match.get("data_source", "").replace("_", " ").title())
+    ts        = _ts(match.get("finished_at"))
+    match_id  = match.get("id", "")
+
+    # ── Stats joueur ──────────────────────────────────────────────
+    kills      = _i(stats.get("total_kills"))
+    deaths     = _i(stats.get("total_deaths"))
+    assists    = _i(stats.get("total_assists"))
+    kd         = _f(stats.get("kd_ratio"))
+    hs_pct     = _pct(stats.get("accuracy_head"))
+    adr        = _f(stats.get("dpr"))          # dpr = damage per round
+    rating     = _f(stats.get("leetify_rating"))
+    ct_rating  = _f(stats.get("ct_leetify_rating"))
+    t_rating   = _f(stats.get("t_leetify_rating"))
+    mvps       = _i(stats.get("mvps"))
+
+    # ── Scores Leetify (depuis profile.rating ou stats du match) ──
+    # Dans /v3/profile/matches les scores Leetify par match ne sont pas présents
+    # On affiche le rating du match (leetify_rating, ct, t)
+    rating_display = f"{rating:+.4f}"
+    ct_display     = f"{ct_rating:+.4f}"
+    t_display      = f"{t_rating:+.4f}"
+
+    # ── Précision ─────────────────────────────────────────────────
+    accuracy   = _pct(stats.get("accuracy_enemy_spotted"))
+    spray      = _pct(stats.get("spray_accuracy"))
+    reaction   = _f(stats.get("reaction_time")) * 1000  # secondes → ms
+    if reaction == 0:
+        reaction = _f(stats.get("reaction_time_ms"))
 
     embed = discord.Embed(
-        title=f"{result}  ·  {map_name}  ·  {score_s} – {score_o}",
+        title=f"{result}  ·  {map_name}  ·  {score_str}",
         colour=color,
-        url=f"https://leetify.com/app/match-details/{match.get('id', '')}",
+        url=f"https://leetify.com/app/match-details/{match_id}" if match_id else discord.Embed.Empty,
     )
     embed.set_author(
         name=player_name,
         url=f"https://leetify.com/app/profile/{steam_id}",
-        icon_url=player_avatar or discord.Embed.Empty,
     )
-    if player_avatar:
-        embed.set_thumbnail(url=player_avatar)
 
     embed.add_field(
         name="📊 Stats",
         value=(
             f"**K / D / A** : `{kills} / {deaths} / {assists}`\n"
-            f"**HS%** : `{hs_pct:.0f}%`\n"
+            f"**K/D** : `{kd:.2f}`\n"
+            f"**HS%** : `{hs_pct}`\n"
             f"**ADR** : `{adr:.0f}`\n"
-            f"**Rating** : `{rating:.2f}`"
+            f"**MVPs** : `{mvps}`"
         ),
         inline=True,
     )
     embed.add_field(
-        name="🎯 Scores Leetify",
+        name="🎯 Leetify Rating",
         value=(
-            f"**Aim** : {_score_icon(aim)}\n"
-            f"**Utility** : {_score_icon(util)}\n"
-            f"**Positioning** : {_score_icon(pos)}\n"
-            f"**CT** : {_score_icon(ct)}  |  **T** : {_score_icon(t)}"
+            f"**Global** : `{rating_display}`\n"
+            f"**CT Side** : `{ct_display}`\n"
+            f"**T Side** : `{t_display}`\n"
+            f"**Précision** : `{accuracy}`\n"
+            f"**Reaction** : `{reaction:.0f}ms`"
         ),
         inline=True,
     )
     embed.add_field(name="\u200b", value="\u200b", inline=True)
     embed.add_field(
         name="🗺️ Partie",
-        value=f"**Map** : {map_name}\n**Mode** : {mode}\n**Terminée** : {ts}",
+        value=(
+            f"**Map** : {map_name}\n"
+            f"**Mode** : {mode}\n"
+            f"**Terminée** : {ts}"
+        ),
         inline=True,
     )
-    embed.add_field(name="🏅 Premier", value=_rank_str(premier), inline=True)
     embed.set_footer(text="Data Provided by Leetify")
     return embed
 
@@ -359,19 +412,15 @@ class CS2TrackerCog(commands.Cog):
         return bool(self.api_key and self.channel_id)
 
     def _all_ids(self) -> set[str]:
-        """Fusionne les IDs fixes (.env) et les IDs dynamiques (DB)."""
         return self._static_ids | set(get_all_linked_steam_ids())
 
     # ─────────────────────────────── Lifecycle ────────────────────
     async def cog_load(self):
         _ensure_table()
-
-        if not self._is_configured():
-            return
-
-        self._poll_loop.change_interval(seconds=self.poll_interval)
-        self._poll_loop.start()
-        logger.info(f"✅ CS2 tracker démarré (poll: {self.poll_interval}s)")
+        if self._is_configured():
+            self._poll_loop.change_interval(seconds=self.poll_interval)
+            self._poll_loop.start()
+            logger.info(f"✅ CS2 tracker démarré (poll: {self.poll_interval}s)")
 
     async def cog_unload(self):
         self._poll_loop.cancel()
@@ -393,10 +442,7 @@ class CS2TrackerCog(commands.Cog):
         logger.info("🔄 Init CS2 tracker — chargement des matchs existants…")
         for sid in self._all_ids():
             matches = await self.leetify.get_matches(sid)
-            self._seen_matches[sid] = {
-                m.get("id") or m.get("matchId", "")
-                for m in matches if m.get("id") or m.get("matchId")
-            }
+            self._seen_matches[sid] = {m["id"] for m in matches if m.get("id")}
         total = sum(len(v) for v in self._seen_matches.values())
         logger.info(f"✅ Init — {total} matchs connus, {len(self._all_ids())} joueur(s)")
 
@@ -407,52 +453,35 @@ class CS2TrackerCog(commands.Cog):
             return
 
         seen = self._seen_matches.setdefault(steam_id, set())
-        new = [
-            (m.get("id") or m.get("matchId", ""), m)
-            for m in matches
-            if (m.get("id") or m.get("matchId", "")) not in seen
-            and (m.get("id") or m.get("matchId"))
-        ]
-        for mid, _ in new:
-            seen.add(mid)
+        new  = [m for m in matches if m.get("id") and m["id"] not in seen]
+        for m in new:
+            seen.add(m["id"])
 
         if not new:
             return
 
-        profile       = await self.leetify.get_profile(steam_id)
-        player_name   = profile.get("name") or profile.get("steamName", steam_id) if profile else steam_id
-        player_avatar = (profile.get("avatarUrl") or profile.get("avatar")) if profile else None
+        # Récupérer le nom du joueur via son profil
+        profile     = await self.leetify.get_profile(steam_id)
+        player_name = profile.get("name", steam_id) if profile else steam_id
 
         channel = self.bot.get_channel(self.channel_id)
         if not channel:
             logger.warning(f"Channel {self.channel_id} introuvable")
             return
 
-        for mid, summary in new:
-            detail     = await self.leetify.get_match(mid)
-            match_data = detail or summary
-            stats      = self._extract_stats(match_data, steam_id) or summary
-            embed      = build_match_embed(player_name, player_avatar, steam_id, match_data, stats)
+        for match in new:
+            # Les stats du joueur sont déjà dans match["stats"][] depuis /v3/profile/matches
+            stats = _extract_player_stats(match, steam_id)
+            if not stats:
+                logger.warning(f"Stats introuvables pour {steam_id} dans match {match['id']}")
+                continue
+
+            embed = build_match_embed(player_name, steam_id, match, stats)
             try:
                 await channel.send(embed=embed)
-                logger.info(f"📬 {player_name} | {mid}")
+                logger.info(f"📬 {player_name} | {match['id']} | {match.get('outcome', '?')}")
             except discord.HTTPException as e:
-                logger.error(f"❌ Post {mid}: {e}")
-
-    def _extract_stats(self, match: dict, steam_id: str) -> Optional[dict]:
-        """Cherche les stats du joueur cible dans la réponse détaillée du match."""
-        for p in match.get("players", []):
-            pid = str(p.get("steamId") or p.get("steam64Id") or p.get("id", ""))
-            if pid == str(steam_id):
-                return p
-        for team in match.get("teams", []):
-            for p in team.get("players", []):
-                pid = str(p.get("steamId") or p.get("steam64Id") or p.get("id", ""))
-                if pid == str(steam_id):
-                    return p
-        if match.get("steamId") or match.get("steam64Id"):
-            return match
-        return None
+                logger.error(f"❌ Post {match['id']}: {e}")
 
     # ============================================================
     # Commandes slash
@@ -474,7 +503,6 @@ class CS2TrackerCog(commands.Cog):
                 ephemeral=True,
             )
 
-        # Vérifier existence sur Leetify
         profile = await self.leetify.get_profile(steam64)
         if not profile:
             return await inter.followup.send(
@@ -485,31 +513,35 @@ class CS2TrackerCog(commands.Cog):
 
         set_steam_link(str(inter.user.id), steam64)
 
-        # Ajouter au tracker live si nouveau joueur
+        # Initialiser le tracker pour ce joueur immédiatement
         if steam64 not in self._seen_matches:
             matches = await self.leetify.get_matches(steam64)
-            self._seen_matches[steam64] = {
-                m.get("id") or m.get("matchId", "")
-                for m in matches if m.get("id") or m.get("matchId")
-            }
+            self._seen_matches[steam64] = {m["id"] for m in matches if m.get("id")}
             logger.info(f"➕ Nouveau joueur tracké: {steam64} ({inter.user.name})")
 
-        player_name   = profile.get("name") or profile.get("steamName", steam64)
-        player_avatar = profile.get("avatarUrl") or profile.get("avatar")
+        player_name = profile.get("name", steam64)
+        ranks       = profile.get("ranks", {})
+        rating      = profile.get("rating", {})
+        premier     = ranks.get("premier")
+        aim         = _f(rating.get("aim"))
+        total       = _i(profile.get("total_matches"))
+        winrate     = _f(profile.get("winrate")) * 100
 
         embed = discord.Embed(
             title="✅ Compte Steam lié !",
             colour=discord.Colour.green(),
             description=f"{inter.user.mention} → **{player_name}**",
         )
-        embed.add_field(name="Steam64 ID", value=f"`{steam64}`", inline=True)
+        embed.add_field(name="Steam64 ID",   value=f"`{steam64}`",         inline=True)
+        embed.add_field(name="🏅 Premier",   value=_rank_str(premier),     inline=True)
+        embed.add_field(name="🎯 Parties",   value=str(total),             inline=True)
+        embed.add_field(name="📈 Win Rate",  value=f"{winrate:.1f}%",      inline=True)
+        embed.add_field(name="🎯 Aim Score", value=_score_icon(aim),       inline=True)
         embed.add_field(
             name="Profil Leetify",
             value=f"[Voir le profil](https://leetify.com/app/profile/{steam64})",
             inline=True,
         )
-        if player_avatar:
-            embed.set_thumbnail(url=player_avatar)
         embed.set_footer(text="Tes prochaines parties CS2 seront automatiquement postées.")
         await inter.followup.send(embed=embed, ephemeral=True)
 
@@ -547,14 +579,41 @@ class CS2TrackerCog(commands.Cog):
                 f"⚠️ `{steam64}` lié mais introuvable sur Leetify.", ephemeral=True
             )
 
-        player_name   = profile.get("name") or profile.get("steamName", steam64)
-        player_avatar = profile.get("avatarUrl") or profile.get("avatar")
+        # ── Extraction des champs réels de l'API ──────────────────
+        player_name = profile.get("name", steam64)
+        ranks       = profile.get("ranks", {})
+        rating      = profile.get("rating", {})
+        stats_prof  = profile.get("stats", {})
+
+        premier     = ranks.get("premier")
+        faceit      = ranks.get("faceit")
+        wingman     = ranks.get("wingman")
+        leetify_r   = _f(ranks.get("leetify"))
+
+        aim         = _f(rating.get("aim"))
+        positioning = _f(rating.get("positioning"))
+        utility     = _f(rating.get("utility"))
+        ct_leetify  = _f(rating.get("ct_leetify")) * 100   # ratio → display
+        t_leetify   = _f(rating.get("t_leetify")) * 100
+
+        total_matches = _i(profile.get("total_matches"))
         winrate       = _f(profile.get("winrate")) * 100
-        matches_count = _i(profile.get("matchCount"))
-        aim           = _f(profile.get("aimRating"))
-        util          = _f(profile.get("utilityRating"))
-        pos           = _f(profile.get("positioningRating"))
-        premier       = profile.get("premierRating")
+        hs_pct        = _f(stats_prof.get("accuracy_head"))
+        reaction      = _f(stats_prof.get("reaction_time_ms"))
+        preaim        = _f(stats_prof.get("preaim"))
+
+        # Rang compétitif par map
+        competitive = ranks.get("competitive", [])
+        comp_lines  = "\n".join(
+            f"• {_map_name(r['map_name'])} : rang `{r['rank']}`"
+            for r in competitive if r.get("rank", 0) > 0
+        ) or "—"
+
+        bans = profile.get("bans", [])
+        ban_str = "\n".join(
+            f"⚠️ Banni sur **{b['platform'].upper()}** ({b['platform_nickname']}) le {b['banned_since'][:10]}"
+            for b in bans
+        ) if bans else None
 
         embed = discord.Embed(
             title=f"💥 {player_name}",
@@ -562,22 +621,39 @@ class CS2TrackerCog(commands.Cog):
             url=f"https://leetify.com/app/profile/{steam64}",
         )
         embed.set_author(name=target.display_name, icon_url=target.display_avatar.url)
-        if player_avatar:
-            embed.set_thumbnail(url=player_avatar)
 
-        embed.add_field(name="Steam64", value=f"`{steam64}`", inline=False)
-        embed.add_field(name="🏅 Premier",  value=_rank_str(premier),  inline=True)
-        embed.add_field(name="🎯 Parties",  value=str(matches_count),   inline=True)
-        embed.add_field(name="📈 Win Rate", value=f"{winrate:.1f}%",    inline=True)
+        embed.add_field(name="Steam64",       value=f"`{steam64}`",          inline=False)
+        embed.add_field(name="🏅 Premier",    value=_rank_str(premier),      inline=True)
+        embed.add_field(name="⚡ FACEIT",     value=f"lvl {faceit}" if faceit else "—", inline=True)
+        embed.add_field(name="🤝 Wingman",    value=f"rang {wingman}" if wingman else "—", inline=True)
+        embed.add_field(name="🎯 Parties",    value=str(total_matches),      inline=True)
+        embed.add_field(name="📈 Win Rate",   value=f"{winrate:.1f}%",       inline=True)
+        embed.add_field(name="🎖️ Leetify",   value=f"{leetify_r:+.2f}",     inline=True)
+
         embed.add_field(
             name="📊 Scores Leetify",
             value=(
                 f"**Aim** : {_score_icon(aim)}  "
-                f"**Utility** : {_score_icon(util)}  "
-                f"**Positioning** : {_score_icon(pos)}"
+                f"**Utility** : {_score_icon(utility)}  "
+                f"**Positioning** : {_score_icon(positioning)}\n"
+                f"**CT** : `{ct_leetify:+.2f}`  **T** : `{t_leetify:+.2f}`"
             ),
             inline=False,
         )
+        embed.add_field(
+            name="🔫 Précision",
+            value=(
+                f"**HS%** : `{hs_pct:.1f}%`\n"
+                f"**Reaction** : `{reaction:.0f}ms`\n"
+                f"**Pré-aim** : `{preaim:.1f}°`"
+            ),
+            inline=True,
+        )
+        embed.add_field(name="🗺️ Rangs compétitifs", value=comp_lines, inline=True)
+
+        if ban_str:
+            embed.add_field(name="🚫 Bans", value=ban_str, inline=False)
+
         embed.set_footer(text="Data Provided by Leetify")
         await inter.followup.send(embed=embed, ephemeral=True)
 
