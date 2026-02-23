@@ -1,5 +1,4 @@
 # config.py – Chargement des paramètres via pydantic-settings
-
 from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -7,43 +6,43 @@ class Settings(BaseSettings):
     # — Tokens & API Keys —
     DISCORD_TOKEN: str
     RIOT_API_KEY: str
+    LEETIFY_API_KEY: str
+    STEAM_API_KEY: Optional[str] = None
 
     # — Database & Timezone —
     DB_URL: str = "sqlite:///data/oogway.db"
     TIMEZONE: str = "Europe/Paris"
 
     # — Discord IDs —
-    APPLICATION_ID:    int  # ID de l'application Discord
-    ALERT_CHANNEL_ID:  int  # où poster les alerts de parties
-    SUMMARY_CHANNEL_ID:int  # où poster les résumés périodiques
-    LINK_CHANNEL_ID:   int  # canal où les users "link" leur compte
-    LEADERBOARD_CHANNEL_ID: int  # canal du leaderboard
-    DEBUG_GUILD_ID:    Optional[int] = None  # pour les slash-commands en dev
-    ORGANIZER_ROLE_ID: int  # rôle autorisé à lancer /5v5
-    CUSTOM_GAME_CHANNEL_ID: int  # salon où la commande est utilisable
-    JOIN_PING_ROLE_ID: Optional[int] = None  # rôle à ping pour rejoindre les customs
+    APPLICATION_ID:    int
+    ALERT_CHANNEL_ID:  int
+    SUMMARY_CHANNEL_ID:int
+    LINK_CHANNEL_ID:   int
+    LEADERBOARD_CHANNEL_ID: int
+    DEBUG_GUILD_ID:    Optional[int] = None
+    ORGANIZER_ROLE_ID: int
+    CUSTOM_GAME_CHANNEL_ID: int
+    JOIN_PING_ROLE_ID: Optional[int] = None
 
     # — Modération —
-    MODERATION_CHANNEL_ID: int  # salon où s'affichent les reports/mutes
-    MUTE_ROLE_ID: int  # rôle "mute" à attribuer
+    MODERATION_CHANNEL_ID: int
+    MUTE_ROLE_ID: int
 
     # — Oogle (Wordle FR) —
-    OOGLE_CHANNEL_ID: int  # salon où poster les notifications quotidiennes
-    OOGLE_LEADERBOARD_CHANNEL_ID: int  # salon du leaderboard OOGLE (nouveau)
-    OOGLE_ROLE_ID: Optional[int] = None  # rôle à donner pour les notifications OOGLE
+    OOGLE_CHANNEL_ID: int
+    OOGLE_LEADERBOARD_CHANNEL_ID: int
+    OOGLE_ROLE_ID: Optional[int] = None
 
+    # — CS2 Tracker —
+    CS_MATCH_CHANNEL_ID: int
+    CS_STEAM_IDS: str = ""
+    CS_POLL_INTERVAL: int = 300
 
     # — Redis —
     REDIS_URL: str
 
     # — Riot API Configuration —
-    DEFAULT_REGION: str = "euw1"  # Région par défaut pour les comptes
-
-    #MTXSERV_CLIENT_ID: str
-    #MTXSERV_CLIENT_SECRET: str
-    #MTXSERV_API_KEY: str
-    #MTXSERV_SERVER_ID: str
-
+    DEFAULT_REGION: str = "euw1"
 
     model_config = SettingsConfigDict(
         env_file=".env",
