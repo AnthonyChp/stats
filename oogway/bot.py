@@ -46,7 +46,6 @@ EXTENSIONS: list[str] = [
     "oogway.cogs.custom_5v5",
     "oogway.cogs.draft",
     "oogway.cogs.profile",
-    "oogway.cogs.rdv",
     "oogway.cogs.moderation",
     "oogway.cogs.oogle",
     "oogway.cogs.cs"
