@@ -807,11 +807,15 @@ class MatchAlertsCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        log.info("Bot ready, loading DDragon data & starting poll")
+        log.info("Bot ready, loading DDragon data…")
         await ensure_ddragon_version(self.http)
         await ensure_runes_data(self.http)
         await ensure_summoners_data(self.http)
         if not self.poll_matches.is_running():
+            # Délai avant le premier poll : laisse le bot finir son init
+            # et évite la rafale de requêtes Riot au démarrage
+            log.info("DDragon OK — démarrage poll dans 15s")
+            await asyncio.sleep(15)
             self.poll_matches.start()
 
     @tasks.loop(minutes=5)
