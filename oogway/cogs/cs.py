@@ -145,6 +145,45 @@ MAP_NAMES: dict[str, str] = {
     "de_anubis":   "Anubis",
     "de_train":    "Train",
 }
+# ─────────────────────────────── Rangs compétitifs ───────────────────────────
+COMP_RANK_NAMES: dict[int, str] = {
+    1:  "Silver I",             2:  "Silver II",
+    3:  "Silver III",           4:  "Silver IV",
+    5:  "Silver Elite",         6:  "Silver Elite Master",
+    7:  "Gold Nova I",          8:  "Gold Nova II",
+    9:  "Gold Nova III",        10: "Gold Nova Master",
+    11: "Master Guardian I",    12: "Master Guardian II",
+    13: "Master Guardian Elite", 14: "Distinguished MG",
+    15: "Legendary Eagle",      16: "Legendary Eagle Master",
+    17: "Supreme Master",       18: "Global Elite",
+}
+
+COMP_RANK_EMOJI_NAME: dict[int, str] = {
+    1:  "silver1",               2:  "silver2",
+    3:  "silver3",               4:  "silver4",
+    5:  "silver_elite",          6:  "silver_elite_master",
+    7:  "nova1",                 8:  "nova2",
+    9:  "nova3",                 10: "nova_master",
+    11: "master_guardian_2",     12: "master_guardian_2",
+    13: "master_guardian_elite", 14: "distinguished_master_guardian",
+    15: "legendary_eagle",       16: "legendary_eagle_master",
+    17: "supreme_master_first_class", 18: "global_elite",
+}
+
+
+def _rank_display(rank: int, guild: Optional[discord.Guild] = None) -> str:
+    """Retourne 'emoji NomDuRang' si l'emoji existe sur le serveur, sinon juste le nom."""
+    if rank <= 0:
+        return "—"
+    name = COMP_RANK_NAMES.get(rank, f"Rang {rank}")
+    if guild:
+        ename = COMP_RANK_EMOJI_NAME.get(rank)
+        if ename:
+            emoji = discord.utils.get(guild.emojis, name=ename)
+            if emoji:
+                return f"{emoji} {name}"
+    return name
+
 
 # data_source → label lisible
 SOURCE_LABELS: dict[str, str] = {
@@ -571,7 +610,7 @@ class CS2TrackerCog(commands.Cog):
                 ephemeral=True,
             )
 
-        await inter.response.defer(ephemeral=True)
+        await inter.response.defer()  # public — pas ephemeral
 
         profile = await self.leetify.get_profile(steam64)
         if not profile:
@@ -579,21 +618,22 @@ class CS2TrackerCog(commands.Cog):
                 f"⚠️ `{steam64}` lié mais introuvable sur Leetify.", ephemeral=True
             )
 
-        # ── Extraction des champs réels de l'API ──────────────────
+        # ── Extraction ────────────────────────────────────────────
         player_name = profile.get("name", steam64)
         ranks       = profile.get("ranks", {})
         rating      = profile.get("rating", {})
         stats_prof  = profile.get("stats", {})
+        guild       = inter.guild
 
         premier     = ranks.get("premier")
         faceit      = ranks.get("faceit")
-        wingman     = ranks.get("wingman")
+        wingman_r   = _i(ranks.get("wingman"))
         leetify_r   = _f(ranks.get("leetify"))
 
         aim         = _f(rating.get("aim"))
         positioning = _f(rating.get("positioning"))
         utility     = _f(rating.get("utility"))
-        ct_leetify  = _f(rating.get("ct_leetify")) * 100   # ratio → display
+        ct_leetify  = _f(rating.get("ct_leetify")) * 100
         t_leetify   = _f(rating.get("t_leetify")) * 100
 
         total_matches = _i(profile.get("total_matches"))
@@ -602,60 +642,103 @@ class CS2TrackerCog(commands.Cog):
         reaction      = _f(stats_prof.get("reaction_time_ms"))
         preaim        = _f(stats_prof.get("preaim"))
 
-        # Rang compétitif par map
+        # Rangs compétitifs par map avec emojis
         competitive = ranks.get("competitive", [])
         comp_lines  = "\n".join(
-            f"• {_map_name(r['map_name'])} : rang `{r['rank']}`"
-            for r in competitive if r.get("rank", 0) > 0
+            f"{_rank_display(r['rank'], guild)}  `{_map_name(r['map_name'])}`"
+            for r in sorted(competitive, key=lambda x: x.get("rank", 0), reverse=True)
+            if r.get("rank", 0) > 0
         ) or "—"
 
         bans = profile.get("bans", [])
-        ban_str = "\n".join(
-            f"⚠️ Banni sur **{b['platform'].upper()}** ({b['platform_nickname']}) le {b['banned_since'][:10]}"
-            for b in bans
-        ) if bans else None
 
+        # ── Embed principal ───────────────────────────────────────
         embed = discord.Embed(
-            title=f"💥 {player_name}",
-            colour=discord.Colour.from_rgb(66, 133, 244),
+            description=(
+                f"[🔗 Voir sur Leetify](https://leetify.com/app/profile/{steam64})\n`{steam64}`"
+            ),
+            colour=discord.Colour.from_rgb(30, 215, 96),  # vert CS2
+        )
+        embed.set_author(
+            name=f"{player_name}  ·  {target.display_name}",
+            icon_url=target.display_avatar.url,
             url=f"https://leetify.com/app/profile/{steam64}",
         )
-        embed.set_author(name=target.display_name, icon_url=target.display_avatar.url)
 
-        embed.add_field(name="Steam64",       value=f"`{steam64}`",          inline=False)
-        embed.add_field(name="🏅 Premier",    value=_rank_str(premier),      inline=True)
-        embed.add_field(name="⚡ FACEIT",     value=f"lvl {faceit}" if faceit else "—", inline=True)
-        embed.add_field(name="🤝 Wingman",    value=f"rang {wingman}" if wingman else "—", inline=True)
-        embed.add_field(name="🎯 Parties",    value=str(total_matches),      inline=True)
-        embed.add_field(name="📈 Win Rate",   value=f"{winrate:.1f}%",       inline=True)
-        embed.add_field(name="🎖️ Leetify",   value=f"{leetify_r:+.2f}",     inline=True)
+        # ── Ligne 1 : Rangs ───────────────────────────────────────
+        embed.add_field(
+            name="🏅 Premier",
+            value=_rank_str(premier),
+            inline=True,
+        )
+        embed.add_field(
+            name="⚡ FACEIT",
+            value=f"Level {faceit}" if faceit else "—",
+            inline=True,
+        )
+        embed.add_field(
+            name="🤝 Wingman",
+            value=_rank_display(wingman_r, guild) if wingman_r else "—",
+            inline=True,
+        )
 
+        # ── Ligne 2 : Stats générales ─────────────────────────────
+        embed.add_field(
+            name="🎯 Parties",
+            value=f"**{total_matches}** matchs",
+            inline=True,
+        )
+        embed.add_field(
+            name="📈 Win Rate",
+            value=f"**{winrate:.1f}%**",
+            inline=True,
+        )
+        embed.add_field(
+            name="🎖️ Leetify Rating",
+            value=f"`{leetify_r:+.2f}`",
+            inline=True,
+        )
+
+        # ── Ligne 3 : Scores Leetify ──────────────────────────────
         embed.add_field(
             name="📊 Scores Leetify",
             value=(
-                f"**Aim** : {_score_icon(aim)}  "
-                f"**Utility** : {_score_icon(utility)}  "
-                f"**Positioning** : {_score_icon(positioning)}\n"
-                f"**CT** : `{ct_leetify:+.2f}`  **T** : `{t_leetify:+.2f}`"
+                f"🎯 **Aim** {_score_icon(aim)}\n"
+                f"💣 **Utility** {_score_icon(utility)}\n"
+                f"🗺️ **Positioning** {_score_icon(positioning)}\n"
+                f"🛡️ **CT side** `{ct_leetify:+.2f}`  |  ⚔️ **T side** `{t_leetify:+.2f}`"
             ),
-            inline=False,
+            inline=True,
         )
+
+        # ── Ligne 3 suite : Précision ─────────────────────────────
         embed.add_field(
             name="🔫 Précision",
             value=(
                 f"**HS%** : `{hs_pct:.1f}%`\n"
-                f"**Reaction** : `{reaction:.0f}ms`\n"
+                f"**Reaction** : `{reaction:.0f} ms`\n"
                 f"**Pré-aim** : `{preaim:.1f}°`"
             ),
             inline=True,
         )
-        embed.add_field(name="🗺️ Rangs compétitifs", value=comp_lines, inline=True)
 
-        if ban_str:
-            embed.add_field(name="🚫 Bans", value=ban_str, inline=False)
+        # ── Rangs compétitifs par map ──────────────────────────────
+        embed.add_field(
+            name="🗺️ Rangs par map",
+            value=comp_lines,
+            inline=True,
+        )
 
-        embed.set_footer(text="Data Provided by Leetify")
-        await inter.followup.send(embed=embed, ephemeral=True)
+        # ── Bans ──────────────────────────────────────────────────
+        if bans:
+            ban_lines = "\n".join(
+                f"🚫 **{b['platform'].upper()}** — {b['platform_nickname']} *(depuis {b['banned_since'][:10]})*"
+                for b in bans
+            )
+            embed.add_field(name="⚠️ Bans détectés", value=ban_lines, inline=False)
+
+        embed.set_footer(text="Data Provided by Leetify  •  /cs-link pour lier ton compte")
+        await inter.followup.send(embed=embed)
 
     # ── /cs-check ─────────────────────────────────────────────────
     @app_commands.command(name="cs-check", description="Force la vérification des derniers matchs CS2")
