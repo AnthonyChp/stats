@@ -36,6 +36,8 @@ from oogway.database import Base, SessionLocal
 
 logger = logging.getLogger(__name__)
 
+# ─────────────────────────────── Constantes API ───────────────────────────────
+LEETIFY_BASE = "https://api-public.cs-prod.leetify.com"
 
 # ─────────────────────────────── Modèle DB ────────────────────────────────────
 class SteamLink(Base):
@@ -53,7 +55,6 @@ class SteamLink(Base):
 
 # ─────────────────────────────── Helpers DB ───────────────────────────────────
 def _ensure_table():
-    """Crée la table steam_links si elle n'existe pas (safe à appeler plusieurs fois)."""
     try:
         from oogway.database import engine
         Base.metadata.create_all(bind=engine, tables=[SteamLink.__table__])
@@ -115,7 +116,7 @@ async def resolve_steam_input(raw: str) -> Optional[str]:
     if m and _STEAM64_RE.match(m.group(1)):
         return m.group(1)
 
-    # Cas 3 : URL vanity → Steam API
+    # Cas 3 : URL vanity → Steam Web API
     m = re.search(r"steamcommunity\.com/id/([^/?\s]+)", raw)
     if m:
         vanity = m.group(1)
@@ -141,9 +142,7 @@ async def resolve_steam_input(raw: str) -> Optional[str]:
     return None
 
 
-# ─────────────────────────────── Constantes ───────────────────────────────────
-LEETIFY_BASE = "https://api.cs-prod.leetify.com/api/public"
-
+# ─────────────────────────────── Constantes display ───────────────────────────
 COLOR_WIN  = discord.Colour.from_rgb(67, 181, 129)
 COLOR_LOSS = discord.Colour.from_rgb(240, 71, 71)
 COLOR_DRAW = discord.Colour.from_rgb(250, 166, 26)
@@ -163,50 +162,80 @@ MAP_NAMES: dict[str, str] = {
 
 # ─────────────────────────────── Client Leetify ───────────────────────────────
 class LeetifyClient:
+    """
+    Wrapper pour l'API publique Leetify v3.
+    Auth : Authorization: Bearer <key>  (ou header _leetify_key: <key>)
+    Base : https://api-public.cs-prod.leetify.com
+    """
+
     def __init__(self, api_key: str):
         self._api_key = api_key
         self._session: Optional[aiohttp.ClientSession] = None
 
+    def _headers(self) -> dict:
+        return {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self._api_key}",
+        }
+
     async def _sess(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(
-                headers={"X-Api-Key": self._api_key, "Accept": "application/json"}
-            )
+            self._session = aiohttp.ClientSession(headers=self._headers())
         return self._session
 
     async def close(self):
         if self._session and not self._session.closed:
             await self._session.close()
 
-    async def _get(self, path: str):
+    async def _get(self, path: str, params: Optional[dict] = None):
+        """GET vers LEETIFY_BASE + path avec query params optionnels."""
         s = await self._sess()
+        url = f"{LEETIFY_BASE}{path}"
         try:
-            async with s.get(f"{LEETIFY_BASE}{path}") as r:
+            async with s.get(url, params=params) as r:
+                logger.debug(f"Leetify {url} params={params} → HTTP {r.status}")
                 if r.status == 200:
                     return await r.json()
-                if r.status != 404:
-                    logger.error(f"Leetify {path}: HTTP {r.status}")
+                if r.status == 401:
+                    logger.error("Leetify: clé API invalide (401)")
+                elif r.status != 404:
+                    body = await r.text()
+                    logger.error(f"Leetify {url}: HTTP {r.status} — {body[:200]}")
         except Exception as e:
-            logger.error(f"Leetify GET {path}: {e}")
+            logger.error(f"Leetify GET {url}: {e}")
         return None
 
-    async def get_profile(self, steam_id: str) -> Optional[dict]:
-        return await self._get(f"/players/{steam_id}")
+    # ── Endpoints ──────────────────────────────────────────────────
+    async def validate_key(self) -> bool:
+        """Valide la clé API. Retourne True si valide."""
+        result = await self._get("/api-key/validate")
+        return result is not None
 
-    async def get_matches(self, steam_id: str) -> list[dict]:
-        data = await self._get(f"/players/{steam_id}/matches")
-        return data if isinstance(data, list) else []
+    async def get_profile(self, steam64_id: str) -> Optional[dict]:
+        """GET /v3/profile?steam64_id=..."""
+        return await self._get("/v3/profile", params={"steam64_id": steam64_id})
+
+    async def get_matches(self, steam64_id: str) -> list[dict]:
+        """GET /v3/profile/matches?steam64_id=... (à adapter selon la doc réelle)"""
+        data = await self._get("/v3/profile/matches", params={"steam64_id": steam64_id})
+        if isinstance(data, list):
+            return data
+        # Certaines réponses encapsulent dans un objet
+        if isinstance(data, dict):
+            return data.get("matches") or data.get("data") or []
+        return []
 
     async def get_match(self, match_id: str) -> Optional[dict]:
-        return await self._get(f"/matches/{match_id}")
+        """GET /v3/match/{match_id}"""
+        return await self._get(f"/v3/match/{match_id}")
 
 
 # ─────────────────────────────── Helpers formatting ──────────────────────────
-def _f(val, d=0.0) -> float:
+def _f(val, d: float = 0.0) -> float:
     try: return float(val) if val is not None else d
     except: return d
 
-def _i(val, d=0) -> int:
+def _i(val, d: int = 0) -> int:
     try: return int(val) if val is not None else d
     except: return d
 
@@ -220,7 +249,7 @@ def _map_name(raw: str) -> str:
     return MAP_NAMES.get(raw, raw.replace("de_", "").capitalize())
 
 def _rank_str(premier) -> str:
-    return (f"{premier:,}".replace(",", " ") + " pts") if premier else "—"
+    return (f"{int(premier):,}".replace(",", " ") + " pts") if premier else "—"
 
 
 def build_match_embed(
@@ -230,13 +259,13 @@ def build_match_embed(
     match: dict,
     stats: dict,
 ) -> discord.Embed:
-    won        = stats.get("won")
-    score_s    = _i(stats.get("teamScore"))
-    score_o    = _i(stats.get("enemyScore"))
-    color      = COLOR_WIN if won is True else (COLOR_LOSS if won is False else COLOR_DRAW)
-    result     = "🏆 Victoire" if won is True else ("💀 Défaite" if won is False else "🤝 Nul")
-    map_name   = _map_name(match.get("mapName", ""))
-    mode       = match.get("gameMode", "Unknown").replace("_", " ").title()
+    won       = stats.get("won")
+    score_s   = _i(stats.get("teamScore"))
+    score_o   = _i(stats.get("enemyScore"))
+    color     = COLOR_WIN if won is True else (COLOR_LOSS if won is False else COLOR_DRAW)
+    result    = "🏆 Victoire" if won is True else ("💀 Défaite" if won is False else "🤝 Nul")
+    map_name  = _map_name(match.get("mapName", ""))
+    mode      = match.get("gameMode", "Unknown").replace("_", " ").title()
 
     ts = "—"
     raw_date = match.get("gameFinishedAt") or match.get("finishedAt")
@@ -336,10 +365,19 @@ class CS2TrackerCog(commands.Cog):
     # ─────────────────────────────── Lifecycle ────────────────────
     async def cog_load(self):
         _ensure_table()
-        if self._is_configured():
-            self._poll_loop.change_interval(seconds=self.poll_interval)
-            self._poll_loop.start()
-            logger.info(f"✅ CS2 tracker démarré (poll: {self.poll_interval}s)")
+
+        if not self._is_configured():
+            return
+
+        # Valider la clé API au démarrage
+        valid = await self.leetify.validate_key()
+        if not valid:
+            logger.error("❌ LEETIFY_API_KEY invalide — CS tracker désactivé")
+            return
+
+        self._poll_loop.change_interval(seconds=self.poll_interval)
+        self._poll_loop.start()
+        logger.info(f"✅ CS2 tracker démarré (poll: {self.poll_interval}s)")
 
     async def cog_unload(self):
         self._poll_loop.cancel()
@@ -358,7 +396,7 @@ class CS2TrackerCog(commands.Cog):
     @_poll_loop.before_loop
     async def _before_poll(self):
         await self.bot.wait_until_ready()
-        logger.info("🔄 Init CS2 tracker…")
+        logger.info("🔄 Init CS2 tracker — chargement des matchs existants…")
         for sid in self._all_ids():
             matches = await self.leetify.get_matches(sid)
             self._seen_matches[sid] = {
@@ -368,14 +406,19 @@ class CS2TrackerCog(commands.Cog):
         total = sum(len(v) for v in self._seen_matches.values())
         logger.info(f"✅ Init — {total} matchs connus, {len(self._all_ids())} joueur(s)")
 
+    # ─────────────────────────────── Check joueur ─────────────────
     async def _check_player(self, steam_id: str):
         matches = await self.leetify.get_matches(steam_id)
         if not matches:
             return
 
         seen = self._seen_matches.setdefault(steam_id, set())
-        new = [(m.get("id") or m.get("matchId", ""), m) for m in matches
-               if (m.get("id") or m.get("matchId", "")) not in seen and (m.get("id") or m.get("matchId"))]
+        new = [
+            (m.get("id") or m.get("matchId", ""), m)
+            for m in matches
+            if (m.get("id") or m.get("matchId", "")) not in seen
+            and (m.get("id") or m.get("matchId"))
+        ]
         for mid, _ in new:
             seen.add(mid)
 
@@ -383,18 +426,19 @@ class CS2TrackerCog(commands.Cog):
             return
 
         profile       = await self.leetify.get_profile(steam_id)
-        player_name   = profile.get("name", steam_id) if profile else steam_id
-        player_avatar = profile.get("avatarUrl") if profile else None
+        player_name   = profile.get("name") or profile.get("steamName", steam_id) if profile else steam_id
+        player_avatar = (profile.get("avatarUrl") or profile.get("avatar")) if profile else None
 
         channel = self.bot.get_channel(self.channel_id)
         if not channel:
+            logger.warning(f"Channel {self.channel_id} introuvable")
             return
 
         for mid, summary in new:
-            detail      = await self.leetify.get_match(mid)
-            match_data  = detail or summary
-            stats       = self._extract_stats(match_data, steam_id) or summary
-            embed       = build_match_embed(player_name, player_avatar, steam_id, match_data, stats)
+            detail     = await self.leetify.get_match(mid)
+            match_data = detail or summary
+            stats      = self._extract_stats(match_data, steam_id) or summary
+            embed      = build_match_embed(player_name, player_avatar, steam_id, match_data, stats)
             try:
                 await channel.send(embed=embed)
                 logger.info(f"📬 {player_name} | {mid}")
@@ -402,12 +446,15 @@ class CS2TrackerCog(commands.Cog):
                 logger.error(f"❌ Post {mid}: {e}")
 
     def _extract_stats(self, match: dict, steam_id: str) -> Optional[dict]:
+        """Cherche les stats du joueur cible dans la réponse détaillée du match."""
         for p in match.get("players", []):
-            if str(p.get("steamId") or p.get("steam64Id") or p.get("id", "")) == str(steam_id):
+            pid = str(p.get("steamId") or p.get("steam64Id") or p.get("id", ""))
+            if pid == str(steam_id):
                 return p
         for team in match.get("teams", []):
             for p in team.get("players", []):
-                if str(p.get("steamId") or p.get("steam64Id") or p.get("id", "")) == str(steam_id):
+                pid = str(p.get("steamId") or p.get("steam64Id") or p.get("id", ""))
+                if pid == str(steam_id):
                     return p
         if match.get("steamId") or match.get("steam64Id"):
             return match
@@ -444,7 +491,7 @@ class CS2TrackerCog(commands.Cog):
 
         set_steam_link(str(inter.user.id), steam64)
 
-        # Ajouter au tracker live si nouveau
+        # Ajouter au tracker live si nouveau joueur
         if steam64 not in self._seen_matches:
             matches = await self.leetify.get_matches(steam64)
             self._seen_matches[steam64] = {
@@ -453,8 +500,8 @@ class CS2TrackerCog(commands.Cog):
             }
             logger.info(f"➕ Nouveau joueur tracké: {steam64} ({inter.user.name})")
 
-        player_name   = profile.get("name", steam64)
-        player_avatar = profile.get("avatarUrl")
+        player_name   = profile.get("name") or profile.get("steamName", steam64)
+        player_avatar = profile.get("avatarUrl") or profile.get("avatar")
 
         embed = discord.Embed(
             title="✅ Compte Steam lié !",
@@ -506,8 +553,8 @@ class CS2TrackerCog(commands.Cog):
                 f"⚠️ `{steam64}` lié mais introuvable sur Leetify.", ephemeral=True
             )
 
-        player_name   = profile.get("name", steam64)
-        player_avatar = profile.get("avatarUrl")
+        player_name   = profile.get("name") or profile.get("steamName", steam64)
+        player_avatar = profile.get("avatarUrl") or profile.get("avatar")
         winrate       = _f(profile.get("winrate")) * 100
         matches_count = _i(profile.get("matchCount"))
         aim           = _f(profile.get("aimRating"))
@@ -516,7 +563,7 @@ class CS2TrackerCog(commands.Cog):
         premier       = profile.get("premierRating")
 
         embed = discord.Embed(
-            title=f"🎮 {player_name}",
+            title=f"💥 {player_name}",
             colour=discord.Colour.from_rgb(66, 133, 244),
             url=f"https://leetify.com/app/profile/{steam64}",
         )
@@ -525,9 +572,9 @@ class CS2TrackerCog(commands.Cog):
             embed.set_thumbnail(url=player_avatar)
 
         embed.add_field(name="Steam64", value=f"`{steam64}`", inline=False)
-        embed.add_field(name="🏅 Premier",  value=_rank_str(premier),          inline=True)
-        embed.add_field(name="🎯 Parties",  value=str(matches_count),           inline=True)
-        embed.add_field(name="📈 Win Rate", value=f"{winrate:.1f}%",            inline=True)
+        embed.add_field(name="🏅 Premier",  value=_rank_str(premier),  inline=True)
+        embed.add_field(name="🎯 Parties",  value=str(matches_count),   inline=True)
+        embed.add_field(name="📈 Win Rate", value=f"{winrate:.1f}%",    inline=True)
         embed.add_field(
             name="📊 Scores Leetify",
             value=(
@@ -556,7 +603,7 @@ class CS2TrackerCog(commands.Cog):
             await self._check_player(sid)
         await inter.followup.send("✅ Done.", ephemeral=True)
 
-    # ── Gestion erreurs commandes ──────────────────────────────────
+    # ── Gestion erreurs ───────────────────────────────────────────
     async def cog_app_command_error(self, inter: Interaction, error: app_commands.AppCommandError):
         msg = "⛔ Organisateur uniquement." if isinstance(error, app_commands.MissingRole) else "❌ Une erreur est survenue."
         try:
