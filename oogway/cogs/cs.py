@@ -175,7 +175,7 @@ class LeetifyClient:
     def _headers(self) -> dict:
         return {
             "Accept": "application/json",
-            "Authorization": f"Bearer {self._api_key}",
+            "_leetify_key": self._api_key,
         }
 
     async def _sess(self) -> aiohttp.ClientSession:
@@ -367,12 +367,6 @@ class CS2TrackerCog(commands.Cog):
         _ensure_table()
 
         if not self._is_configured():
-            return
-
-        # Valider la clé API au démarrage
-        valid = await self.leetify.validate_key()
-        if not valid:
-            logger.error("❌ LEETIFY_API_KEY invalide — CS tracker désactivé")
             return
 
         self._poll_loop.change_interval(seconds=self.poll_interval)
