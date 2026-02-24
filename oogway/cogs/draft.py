@@ -621,6 +621,7 @@ class DraftCog(commands.Cog):
         series.score_a += side == "A"
         series.score_b += side == "B"
         logger.info("Victoire Team %s (score %d-%d)", side, series.score_a, series.score_b)
+        await inter.channel.send("🔄 **Besoin d'un remplacement ?** Utilisez `/remplacer` maintenant, avant la prochaine draft.",delete_after=30)
 
         g = series.current_game
         try:
@@ -903,7 +904,104 @@ class DraftCog(commands.Cog):
                 f"cap={rec.was_captain}, new_cap={rec.new_captain_id}) "
                 f"série {series.id}"
             )
+    # ─── /draft-fix ────────────────────────────────────────────────────────────
+    @app_commands.command(
+    name="draft-fix",
+    description="Corriger un pick ou ban après une erreur (admin only)"
+    )
+    @app_commands.describe(
+        type="pick ou ban",
+        team="A ou B",
+        position="Position dans la liste (1 à 5 pour picks, 1 à 5 pour bans)",
+        champion="Nom du champion correct",
+    )
+    @app_commands.choices(
+        type=[
+            app_commands.Choice(name="pick", value="pick"),
+            app_commands.Choice(name="ban",  value="ban"),
+        ],
+        team=[
+            app_commands.Choice(name="Team A", value="A"),
+            app_commands.Choice(name="Team B", value="B"),
+        ]
+    )
+    async def draft_fix(self, inter: Interaction, type: str, team: str,
+                        position: int, champion: str):
+        await inter.response.defer(ephemeral=True)
+    
+        # Vérifier thread de draft
+        if not isinstance(inter.channel, discord.Thread) or not inter.channel.name.startswith("draft-"):
+            return await inter.followup.send("❌ Dans le thread de draft uniquement.", ephemeral=True)
+    
+        series = self.series_by_thread.get(inter.channel.id)
+        if not series:
+            return await inter.followup.send("❌ Aucune série active.", ephemeral=True)
+    
+        # Seul le créateur (captain_a par convention) ou un admin peut corriger
+        if inter.user.id not in (series.captain_a, series.captain_b):
+            # Vérifier rôle admin
+            if not (inter.guild and inter.guild.get_member(inter.user.id) and
+                    any(r.id == settings.ORGANIZER_ROLE_ID
+                        for r in inter.guild.get_member(inter.user.id).roles)):
+                return await inter.followup.send("⛔ Capitaines ou organisateur uniquement.", ephemeral=True)
+    
+        # Interdire pendant une draft active
+        g = series.current_game
+        draft_active = (g.winner is None and (g.picks_a or g.picks_b or g.bans_a or g.bans_b))
+        if draft_active:
+            return await inter.followup.send(
+                "❌ Draft en cours — attends la fin de la game.\n"
+                "Si c'est une erreur **pendant** la draft, utilise `/draft-undo` à la place.",
+                ephemeral=True
+            )
+    
+        # Canonicaliser le champion
+        cand = canonicalize(champion)
+        if not cand:
+            return await inter.followup.send(f"❌ Champion inconnu : `{champion}`", ephemeral=True)
+    
+        # Récupérer la bonne liste
+        if type == "pick":
+            lst = g.picks_a if team == "A" else g.picks_b
+            max_pos = 5
+        else:
+            lst = g.bans_a if team == "A" else g.bans_b
+            max_pos = 5
+    
+        if not (1 <= position <= max_pos):
+            return await inter.followup.send(
+                f"❌ Position invalide (1 à {max_pos}).", ephemeral=True
+            )
 
+        if position > len(lst):
+            return await inter.followup.send(
+                f"❌ La liste Team {team} n'a que {len(lst)} entrée(s) pour l'instant.", ephemeral=True
+            )
+    
+        old_champ = lst[position - 1]
+    
+        # Vérifier que le nouveau champion n'est pas déjà pris ailleurs
+        all_taken = set(g.picks_a + g.picks_b + g.bans_a + g.bans_b) - {old_champ}
+        if cand in all_taken:
+            return await inter.followup.send(f"❌ `{cand}` est déjà dans la draft.", ephemeral=True)
+    
+        # Appliquer la correction
+        lst[position - 1] = cand
+    
+        # Mettre à jour le fearless pool si c'était un pick
+        if type == "pick":
+            series.fearless_pool.discard(old_champ)
+            series.fearless_pool.add(cand)
+    
+        await inter.followup.send(
+            f"✅ Corrigé : `{old_champ}` → `{cand}` (Team {team}, {type} #{position})",
+            ephemeral=True
+        )
+        await inter.channel.send(
+            f"📝 **Correction draft** : `{old_champ}` → `{cand}` "
+            f"(Team {team}, {type} position {position}) par <@{inter.user.id}>"
+        )
+    
     # ─── /meta ────────────────────────────────────────────────────────────
     @app_commands.command(name="meta", description="Stats méta customs: top picks/bans/presence/winrate")
     @app_commands.describe(top="Taille du top (1-25)", min_picks="Picks minimum pour le WR")
