@@ -32,12 +32,14 @@ class ToVoteView(discord.ui.View):
         target: discord.Member,
         duration: int,
     ):
-        super().__init__(timeout=VOTE_DURATION)
+        super().__init__(timeout=None)
         self.eligible_ids = eligible_ids
         self.target = target
         self.duration = duration
-        self.votes: dict[int, bool] = {}  # user_id → True=Oui, False=Non
-        self._finished = asyncio.Event()
+        self.votes: dict[int, bool] = {}        # user_id → True=Oui, False=Non
+        self.voter_names: dict[int, str] = {}   # user_id → display_name
+        self.message: Optional[discord.Message] = None
+        self.end_ts: int = 0
 
     # résultat final
     @property
@@ -52,6 +54,45 @@ class ToVoteView(discord.ui.View):
     def passed(self) -> bool:
         return self.oui > self.non
 
+    def build_embed(self, final: bool = False) -> discord.Embed:
+        if final:
+            color = COLOR_PASSED if self.passed else COLOR_REFUSED
+            title = "✅ TO Approuvé" if self.passed else "❌ TO Refusé"
+        else:
+            color = COLOR_VOTE
+            title = "⚖️ Vote Time-Out"
+
+        embed = discord.Embed(title=title, color=color)
+
+        embed.add_field(name="Cible", value=self.target.mention, inline=True)
+        embed.add_field(name="Durée TO", value=f"**{self.duration}s**", inline=True)
+
+        if not final:
+            embed.add_field(name="Fin du vote", value=f"<t:{self.end_ts}:R>", inline=True)
+
+        # Listes des votants
+        oui_names = [name for uid, name in self.voter_names.items() if self.votes[uid]]
+        non_names = [name for uid, name in self.voter_names.items() if not self.votes[uid]]
+
+        embed.add_field(
+            name=f"✅ Oui — {len(oui_names)}",
+            value="\n".join(oui_names) or "*aucun vote*",
+            inline=True,
+        )
+        embed.add_field(
+            name=f"❌ Non — {len(non_names)}",
+            value="\n".join(non_names) or "*aucun vote*",
+            inline=True,
+        )
+
+        if self.target.display_avatar:
+            embed.set_thumbnail(url=self.target.display_avatar.url)
+
+        if not final:
+            embed.set_footer(text="Un vote par personne • Pas de changement possible")
+
+        return embed
+
     async def _handle_vote(self, interaction: Interaction, choice: bool) -> None:
         if interaction.user.id not in self.eligible_ids:
             return await interaction.response.send_message(
@@ -65,11 +106,18 @@ class ToVoteView(discord.ui.View):
             return await interaction.response.send_message(
                 "Tu ne peux pas voter pour ton propre TO.", ephemeral=True
             )
+
         self.votes[interaction.user.id] = choice
+        self.voter_names[interaction.user.id] = interaction.user.display_name
+
         label = "✅ Oui" if choice else "❌ Non"
         await interaction.response.send_message(
             f"Vote enregistré : **{label}**", ephemeral=True
         )
+
+        # Mise à jour live de l'embed
+        if self.message:
+            await self.message.edit(embed=self.build_embed(final=False), view=self)
 
     @discord.ui.button(label="✅ Oui", style=discord.ButtonStyle.danger)
     async def btn_oui(self, interaction: Interaction, button: discord.ui.Button):
@@ -79,13 +127,11 @@ class ToVoteView(discord.ui.View):
     async def btn_non(self, interaction: Interaction, button: discord.ui.Button):
         await self._handle_vote(interaction, False)
 
-    async def on_timeout(self) -> None:
+    def close(self) -> None:
+        """Désactive les boutons sans passer par le timeout de la View."""
         for item in self.children:
             item.disabled = True  # type: ignore[attr-defined]
-        self._finished.set()
-
-    async def wait_result(self) -> None:
-        await self._finished.wait()
+        self.stop()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -140,52 +186,19 @@ class ToCog(commands.Cog):
 
         end_ts = int(time.time()) + VOTE_DURATION
 
-        # ── Embed initial ────────────────────────────────────────────────────
-        embed = discord.Embed(
-            title="⚖️ Vote Time-Out",
-            color=COLOR_VOTE,
-        )
-        embed.add_field(name="Cible", value=user.mention, inline=True)
-        embed.add_field(name="Durée", value=f"**{duree}s**", inline=True)
-        embed.add_field(name="Fin du vote", value=f"<t:{end_ts}:R>", inline=True)
-        embed.add_field(
-            name="Votants autorisés",
-            value=f"{len(eligible_ids)} membre(s) du vocal",
-            inline=False
-        )
-        embed.set_footer(text="Un vote par personne • Pas de changement possible")
-        if user.display_avatar:
-            embed.set_thumbnail(url=user.display_avatar.url)
-
+        # ── Vue + embed initial ───────────────────────────────────────────────
         view = ToVoteView(eligible_ids=eligible_ids, target=user, duration=duree)
+        view.end_ts = end_ts
 
-        await interaction.response.send_message(embed=embed, view=view)
+        await interaction.response.send_message(embed=view.build_embed(), view=view)
         message = await interaction.original_response()
+        view.message = message
 
-        # ── Attente de fin du vote ────────────────────────────────────────────
-        await view.wait_result()
+        # ── Attente fixe de 60s (indépendante des interactions) ──────────────
+        await asyncio.sleep(VOTE_DURATION)
 
-        # Désactiver les boutons
-        for item in view.children:
-            item.disabled = True  # type: ignore[attr-defined]
-
-        total = view.oui + view.non
-        result_color = COLOR_PASSED if view.passed else COLOR_REFUSED
-        result_title = "✅ TO Approuvé" if view.passed else "❌ TO Refusé"
-        result_desc = (
-            f"**{view.oui} Oui** — **{view.non} Non** ({total} votant(s))"
-        )
-
-        embed.title = result_title
-        embed.color = result_color
-        embed.description = result_desc
-        # Retirer le champ "Fin du vote" et le remplacer par résultat
-        embed.clear_fields()
-        embed.add_field(name="Cible", value=user.mention, inline=True)
-        embed.add_field(name="Durée TO", value=f"**{duree}s**", inline=True)
-        embed.add_field(name="Score", value=result_desc, inline=False)
-
-        await message.edit(embed=embed, view=view)
+        view.close()
+        await message.edit(embed=view.build_embed(final=True), view=view)
 
         if not view.passed:
             log.info("TO refusé pour %s (%d vs %d)", user, view.oui, view.non)
@@ -219,20 +232,21 @@ class ToCog(commands.Cog):
         try:
             if saved_roles:
                 await member.remove_roles(*saved_roles, reason="TO communautaire")
-        except discord.Forbidden:
-            log.warning("Impossible de retirer les rôles de %s", member)
+        except discord.HTTPException as e:
+            log.error("Impossible de retirer les rôles de %s : %s", member, e)
 
         # Attribuer le rôle mute
         try:
             await member.add_roles(mute_role, reason="TO communautaire")
-        except discord.Forbidden:
-            log.warning("Impossible d'ajouter le rôle mute à %s", member)
+        except discord.HTTPException as e:
+            log.error("Impossible d'ajouter le rôle mute à %s : %s", member, e)
 
-        # Kick du vocal
+        # Kick du vocal — move_to(None) nécessite la permission Move Members
         try:
             await member.move_to(None, reason="TO communautaire")
-        except discord.Forbidden:
-            log.warning("Impossible de déplacer %s hors du vocal", member)
+            log.info("Kick vocal appliqué à %s", member)
+        except discord.HTTPException as e:
+            log.error("Impossible de kick %s du vocal : %s (status=%s, code=%s)", member, e, e.status, e.code)
 
         # Attendre la durée du TO
         await asyncio.sleep(duration)
@@ -240,16 +254,16 @@ class ToCog(commands.Cog):
         # Retirer le rôle mute
         try:
             await member.remove_roles(mute_role, reason="Fin du TO communautaire")
-        except discord.Forbidden:
-            log.warning("Impossible de retirer le rôle mute de %s", member)
+        except discord.HTTPException as e:
+            log.error("Impossible de retirer le rôle mute de %s : %s", member, e)
 
         # Restaurer les rôles sauvegardés
         if saved_roles:
             roles_to_restore = [r for r in saved_roles if r.is_assignable()]
             try:
                 await member.add_roles(*roles_to_restore, reason="Fin du TO communautaire")
-            except discord.Forbidden:
-                log.warning("Impossible de restaurer les rôles de %s", member)
+            except discord.HTTPException as e:
+                log.error("Impossible de restaurer les rôles de %s : %s", member, e)
 
         log.info("TO terminé pour %s – rôles restaurés : %s", member, [r.name for r in saved_roles])
 
