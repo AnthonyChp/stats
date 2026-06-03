@@ -18,8 +18,10 @@ COLOR_VOTE    = 0xFFA500  # Orange – vote en cours
 COLOR_PASSED  = 0xE74C3C  # Rouge  – TO appliqué
 COLOR_REFUSED = 0x3498DB  # Bleu   – TO refusé
 
-VOTE_DURATION = 60   # secondes fixes pour le vote
-MAX_TO_SECS   = 120  # durée max du TO
+VOTE_DURATION    = 60   # secondes fixes pour le vote
+MAX_TO_SECS      = 120  # durée max du TO
+MIN_VOCAL_MEMBERS = 4   # membres min dans le vocal pour lancer un TO
+ANTI_ABUSE_SECS  = 30   # durée du TO retour si vote refusé
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -182,7 +184,16 @@ class ToCog(commands.Cog):
         duree = min(duree, MAX_TO_SECS)
 
         # Snapshot des membres éligibles au vote (présents dans le vocal)
-        eligible_ids: set[int] = {m.id for m in caller_channel.members}
+        vocal_members = caller_channel.members
+        eligible_ids: set[int] = {m.id for m in vocal_members}
+
+        # Quorum : 4 membres minimum dans le vocal
+        if len(vocal_members) < MIN_VOCAL_MEMBERS:
+            return await interaction.response.send_message(
+                f"Il faut au moins **{MIN_VOCAL_MEMBERS} membres** dans le vocal pour lancer un TO "
+                f"({len(vocal_members)} présent(s)).",
+                ephemeral=True
+            )
 
         end_ts = int(time.time()) + VOTE_DURATION
 
@@ -201,7 +212,9 @@ class ToCog(commands.Cog):
         await message.edit(embed=view.build_embed(final=True), view=view)
 
         if not view.passed:
-            log.info("TO refusé pour %s (%d vs %d)", user, view.oui, view.non)
+            log.info("TO refusé pour %s (%d vs %d) – anti-abus : TO %ds sur %s",
+                     user, view.oui, view.non, ANTI_ABUSE_SECS, caller)
+            await self._apply_to(interaction.guild, caller, ANTI_ABUSE_SECS)  # type: ignore[arg-type]
             return
 
         # ── Application du TO ─────────────────────────────────────────────────
