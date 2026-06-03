@@ -115,7 +115,12 @@ async def _apply_role(guild: discord.Guild, role: discord.Role) -> tuple[list[st
 
     for did, sc in top:
         member = guild.get_member(did)
-        if member and role not in member.roles:
+        if member is None:
+            try:
+                member = await guild.fetch_member(did)
+            except discord.HTTPException:
+                continue
+        if role not in member.roles:
             try:
                 await member.add_roles(role, reason=f"Assidus: top 10 ({sc} parties/30 j)")
                 added.append(f"{member.display_name} ({sc})")
