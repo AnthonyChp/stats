@@ -8,6 +8,7 @@ import logging
 from zoneinfo import ZoneInfo
 
 import discord
+from discord import Interaction, app_commands
 from discord.ext import commands, tasks
 from sqlalchemy import func
 
@@ -71,6 +72,32 @@ async def _compute_scores(guild: discord.Guild) -> list[tuple[int, int]]:
     return result
 
 
+async def _apply_role(guild: discord.Guild, role: discord.Role) -> tuple[list[str], list[str]]:
+    """Attribue/retire le rôle selon le top 10 actuel. Retourne (added, removed)."""
+    top = await _compute_scores(guild)
+    top_ids = {did for did, _ in top}
+    added, removed = [], []
+
+    for member in role.members:
+        if member.id not in top_ids:
+            try:
+                await member.remove_roles(role, reason="Assidus: sorti du top 10")
+                removed.append(member.display_name)
+            except discord.HTTPException as e:
+                logger.warning("Impossible de retirer le rôle à %s : %s", member, e)
+
+    for did, sc in top:
+        member = guild.get_member(did)
+        if member and role not in member.roles:
+            try:
+                await member.add_roles(role, reason=f"Assidus: top 10 ({sc} parties/30 j)")
+                added.append(f"{member.display_name} ({sc})")
+            except discord.HTTPException as e:
+                logger.warning("Impossible d'ajouter le rôle à %s : %s", member, e)
+
+    return added, removed
+
+
 class AssidusRoleCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -79,57 +106,59 @@ class AssidusRoleCog(commands.Cog):
     def cog_unload(self) -> None:
         self._update_assidus.cancel()
 
+    # ── Task automatique — chaque lundi à 06h00 ───────────────────────────────
     @tasks.loop(time=dt.time(hour=6, minute=0, tzinfo=TZ_PARIS))
     async def _update_assidus(self) -> None:
-        # N'agir que le lundi (weekday 0)
         if dt.datetime.now(TZ_PARIS).weekday() != 0:
             return
-
-        if not settings.ASSIDUS_ROLE_ID:
-            logger.warning("ASSIDUS_ROLE_ID non configuré — skip mise à jour.")
-            return
-
-        guild = discord.utils.get(self.bot.guilds)
-        if guild is None:
-            return
-
-        role = guild.get_role(settings.ASSIDUS_ROLE_ID)
-        if role is None:
-            logger.error("Rôle ASSIDUS_ROLE_ID %s introuvable.", settings.ASSIDUS_ROLE_ID)
-            return
-
-        top = await _compute_scores(guild)
-        top_ids = {did for did, _ in top}
-
-        added, removed = [], []
-
-        # Retirer le rôle aux membres qui ne sont plus dans le top
-        for member in role.members:
-            if member.id not in top_ids:
-                try:
-                    await member.remove_roles(role, reason="Assidus: sorti du top 10")
-                    removed.append(member.display_name)
-                except discord.HTTPException as e:
-                    logger.warning("Impossible de retirer le rôle à %s : %s", member, e)
-
-        # Attribuer le rôle aux nouveaux entrants
-        for did, sc in top:
-            member = guild.get_member(did)
-            if member and role not in member.roles:
-                try:
-                    await member.add_roles(role, reason=f"Assidus: top 10 ({sc} parties/30 j)")
-                    added.append(f"{member.display_name} ({sc})")
-                except discord.HTTPException as e:
-                    logger.warning("Impossible d'ajouter le rôle à %s : %s", member, e)
-
-        logger.info(
-            "✅ Assidus mis à jour — ajoutés: %s | retirés: %s",
-            added or "aucun", removed or "aucun"
-        )
+        await self._run_update()
 
     @_update_assidus.before_loop
     async def _before(self) -> None:
         await self.bot.wait_until_ready()
+
+    # ── Logique partagée ──────────────────────────────────────────────────────
+    async def _run_update(self, guild: discord.Guild | None = None) -> tuple[list[str], list[str]]:
+        if not settings.ASSIDUS_ROLE_ID:
+            logger.warning("ASSIDUS_ROLE_ID non configuré — skip mise à jour.")
+            return [], []
+
+        guild = guild or discord.utils.get(self.bot.guilds)
+        if guild is None:
+            return [], []
+
+        role = guild.get_role(settings.ASSIDUS_ROLE_ID)
+        if role is None:
+            logger.error("Rôle ASSIDUS_ROLE_ID %s introuvable.", settings.ASSIDUS_ROLE_ID)
+            return [], []
+
+        added, removed = await _apply_role(guild, role)
+        logger.info(
+            "✅ Assidus mis à jour — ajoutés: %s | retirés: %s",
+            added or "aucun", removed or "aucun"
+        )
+        return added, removed
+
+    # ── /update-assidus — déclenchement manuel ────────────────────────────────
+    @app_commands.command(
+        name="update-assidus",
+        description="Recalcule et met à jour le rôle @LoL Assidu maintenant (organisateurs)"
+    )
+    @app_commands.checks.has_role(settings.ORGANIZER_ROLE_ID)
+    async def update_assidus(self, inter: Interaction) -> None:
+        await inter.response.defer(ephemeral=True)
+
+        added, removed = await self._run_update(inter.guild)
+
+        lines = []
+        if added:
+            lines.append("**Nouveau(x) assidu(s) :**\n" + "\n".join(f"+ {n}" for n in added))
+        if removed:
+            lines.append("**Retiré(s) du top 10 :**\n" + "\n".join(f"- {n}" for n in removed))
+        if not lines:
+            lines.append("Aucun changement.")
+
+        await inter.followup.send("\n\n".join(lines), ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:
