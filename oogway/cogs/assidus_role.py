@@ -78,18 +78,24 @@ async def _compute_scores(guild: discord.Guild) -> tuple[list[tuple[int, int]], 
                 debug["customs"][str(did)] = debug["customs"].get(str(did), 0) + 1
     debug["series_in_window"] = series_in_window
 
-    # ── Top N membres présents dans le guild ──────────────────────────────────
+    # ── Résoudre les membres via API (get_member utilise le cache, fetch_member fait un appel API) ──
     top_all = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     result = []
     for did, sc in top_all:
         debug["scores_final"][str(did)] = sc
         member = guild.get_member(did)
-        if member:
-            result.append((did, sc))
-            if len(result) == TOP_N:
-                break
-        else:
-            debug["not_in_guild"].append(did)
+        if member is None:
+            try:
+                member = await guild.fetch_member(did)
+            except discord.NotFound:
+                debug["not_in_guild"].append(did)
+                continue
+            except discord.HTTPException:
+                debug["not_in_guild"].append(did)
+                continue
+        result.append((did, sc))
+        if len(result) == TOP_N:
+            break
 
     return result, debug
 
