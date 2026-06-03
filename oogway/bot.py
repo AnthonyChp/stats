@@ -31,6 +31,8 @@ log = get_logger("oogway.bot")
 ###############################################################################
 intents = discord.Intents.default()
 intents.guilds = True
+intents.members = True
+intents.voice_states = True
 intents.messages = True
 intents.message_content = True  # requis pour les commandes prefix (legacy)
 
@@ -51,6 +53,7 @@ EXTENSIONS: list[str] = [
     "oogway.cogs.cs",
     "oogway.cogs.historique",
     "oogway.cogs.assidus_role",
+    "oogway.cogs.to",
 ]
 
 
