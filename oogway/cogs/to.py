@@ -234,20 +234,21 @@ class ToCog(commands.Cog):
         try:
             if saved_roles:
                 await member.remove_roles(*saved_roles, reason="TO communautaire")
-        except discord.Forbidden:
-            log.warning("Impossible de retirer les rôles de %s", member)
+        except discord.HTTPException as e:
+            log.error("Impossible de retirer les rôles de %s : %s", member, e)
 
         # Attribuer le rôle mute
         try:
             await member.add_roles(mute_role, reason="TO communautaire")
-        except discord.Forbidden:
-            log.warning("Impossible d'ajouter le rôle mute à %s", member)
+        except discord.HTTPException as e:
+            log.error("Impossible d'ajouter le rôle mute à %s : %s", member, e)
 
-        # Kick du vocal
+        # Kick du vocal — move_to(None) nécessite la permission Move Members
         try:
             await member.move_to(None, reason="TO communautaire")
-        except discord.Forbidden:
-            log.warning("Impossible de déplacer %s hors du vocal", member)
+            log.info("Kick vocal appliqué à %s", member)
+        except discord.HTTPException as e:
+            log.error("Impossible de kick %s du vocal : %s (status=%s, code=%s)", member, e, e.status, e.code)
 
         # Attendre la durée du TO
         await asyncio.sleep(duration)
@@ -255,16 +256,16 @@ class ToCog(commands.Cog):
         # Retirer le rôle mute
         try:
             await member.remove_roles(mute_role, reason="Fin du TO communautaire")
-        except discord.Forbidden:
-            log.warning("Impossible de retirer le rôle mute de %s", member)
+        except discord.HTTPException as e:
+            log.error("Impossible de retirer le rôle mute de %s : %s", member, e)
 
         # Restaurer les rôles sauvegardés
         if saved_roles:
             roles_to_restore = [r for r in saved_roles if r.is_assignable()]
             try:
                 await member.add_roles(*roles_to_restore, reason="Fin du TO communautaire")
-            except discord.Forbidden:
-                log.warning("Impossible de restaurer les rôles de %s", member)
+            except discord.HTTPException as e:
+                log.error("Impossible de restaurer les rôles de %s : %s", member, e)
 
         log.info("TO terminé pour %s – rôles restaurés : %s", member, [r.name for r in saved_roles])
 
