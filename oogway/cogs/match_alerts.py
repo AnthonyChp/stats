@@ -16,10 +16,14 @@ from discord.ext import commands, tasks
 from PIL import Image
 from sqlalchemy.exc import IntegrityError
 
-from oogway.database import Match, SessionLocal, User, init_db
+from oogway.database import Match, SessionLocal, User, init_db, MatchParticipant, OogScoreRecord
 from oogway.riot.client import RiotClient
 from oogway.config import settings
 from oogway.cogs.profile import r_get, r_set
+from oogway.oogscore.extract import from_participant as oogscore_extract, participant_to_db_fields
+from oogway.oogscore.engine import compute_oogscore as compute_oogscore_v2
+from oogway.oogscore.baseline import load_for as baseline_load_for
+from oogway.oogscore.tasks import get_baseline_cache, load_baseline_from_db
 import time
 import json
 
@@ -723,6 +727,8 @@ class MatchAlertsCog(commands.Cog):
     async def cog_unload(self):
         await self.http.close()
         self.db.close()
+        if self.refresh_baseline_nightly.is_running():
+            self.refresh_baseline_nightly.cancel()
 
     # ─── Redis state ──────────────────────────────────────────────────────
     async def _get_last_state(self, puuid: str, queue_id: int) -> Optional[Tuple[str, str, int]]:
@@ -811,12 +817,41 @@ class MatchAlertsCog(commands.Cog):
         await ensure_ddragon_version(self.http)
         await ensure_runes_data(self.http)
         await ensure_summoners_data(self.http)
+        # Load OogScore v2 baseline from DB
+        try:
+            load_baseline_from_db(self.db)
+        except Exception as e:
+            log.warning("Could not load OogScore baseline: %s", e)
         if not self.poll_matches.is_running():
             # Délai avant le premier poll : laisse le bot finir son init
             # et évite la rafale de requêtes Riot au démarrage
             log.info("DDragon OK — démarrage poll dans 15s")
             await asyncio.sleep(15)
             self.poll_matches.start()
+        if not self.refresh_baseline_nightly.is_running():
+            self.refresh_baseline_nightly.start()
+
+    @tasks.loop(hours=24)
+    async def refresh_baseline_nightly(self):
+        """Rebuild OogScore baseline nightly at ~04:00 Europe/Paris."""
+        import datetime as _dt
+        try:
+            import zoneinfo
+            paris = zoneinfo.ZoneInfo("Europe/Paris")
+            now = _dt.datetime.now(paris)
+            target = now.replace(hour=4, minute=0, second=0, microsecond=0)
+            if now >= target:
+                target += _dt.timedelta(days=1)
+            wait_secs = (target - now).total_seconds()
+            await asyncio.sleep(wait_secs)
+        except Exception:
+            pass  # If timezone unavailable, just run immediately
+        try:
+            from oogway.oogscore.tasks import refresh_baseline
+            n = refresh_baseline(self.db)
+            log.info("OogScore nightly baseline refresh done: %d scopes", n)
+        except Exception as e:
+            log.error("OogScore nightly baseline refresh failed: %s", e, exc_info=True)
 
     @tasks.loop(minutes=5)
     async def poll_matches(self):
@@ -953,12 +988,55 @@ class MatchAlertsCog(commands.Cog):
             log.info(f"Match {mid} already in DB")
             return
 
+        # Persist all 10 participants for OogScore v2 baseline building
+        game_duration_seconds = info.get("gameDuration", 0)
+        linked_puuids = {u.puuid for u in self.db.query(User).all()}
+        try:
+            for p in info["participants"]:
+                fields = participant_to_db_fields(
+                    p, game_duration_seconds, mid, linked_puuids
+                )
+                self.db.add(MatchParticipant(**fields))
+            self.db.commit()
+        except Exception as e:
+            log.warning("Failed to persist match participants for %s: %s", mid, e)
+            self.db.rollback()
+
+        # Compute OogScore v2 for the linked member
+        oogscore_v2_result = None
+        try:
+            raw_stats = oogscore_extract(part, game_duration_seconds)
+            if raw_stats is not None:
+                baseline_cache = get_baseline_cache()
+                baseline = baseline_load_for(raw_stats.role, raw_stats.champion, baseline_cache)
+                oogscore_v2_result = compute_oogscore_v2(raw_stats, baseline)
+                if oogscore_v2_result.is_scorable:
+                    score_record = OogScoreRecord(
+                        match_id=mid,
+                        puuid=user.puuid,
+                        score=oogscore_v2_result.score,
+                        grade=oogscore_v2_result.grade,
+                        role=oogscore_v2_result.role,
+                        components_json=json.dumps({
+                            k: {"raw": cb.raw_value, "norm": cb.normalized, "weight": cb.weight, "contrib": cb.contribution}
+                            for k, cb in oogscore_v2_result.components.items()
+                        }),
+                        baseline_source=oogscore_v2_result.baseline_source,
+                        sample_size_used=oogscore_v2_result.sample_size_used,
+                        computed_at=dt.datetime.utcnow(),
+                    )
+                    self.db.add(score_record)
+                    self.db.commit()
+        except Exception as e:
+            log.warning("OogScore v2 computation failed for %s: %s", mid, e)
+            self.db.rollback()
+
         await self._send_embed(
             user, info, part, tier, div, lp_now, lp_delta, wr,
             gold_diff, exp_diff, badges,
             opponent["championName"] if opponent else "?",
             duo_names, streak_count, is_win_streak, rank_change,
-            personal_records, lp_values
+            personal_records, lp_values, oogscore_v2_result
         )
 
     async def _get_rank(self, user: User, queue_id: int) -> Tuple[str, str, int, int]:
@@ -975,7 +1053,8 @@ class MatchAlertsCog(commands.Cog):
         self, user: User, info: Any, part: Any, tier: str, div: str, lp: int,
         lp_delta: int, wr: int, gold_diff: int, exp_diff: int, badges: List[str],
         opp_champ: str, duo_names: List[str], streak_count: int, is_win_streak: bool,
-        rank_change: Optional[str], personal_records: List[str], lp_values: List[int]
+        rank_change: Optional[str], personal_records: List[str], lp_values: List[int],
+        oogscore_v2_result=None,
     ):
         channel = self.bot.get_channel(settings.ALERT_CHANNEL_ID)
         if channel is None:
@@ -1074,12 +1153,24 @@ class MatchAlertsCog(commands.Cog):
         player_rank = next((i + 1 for i, (puuid, _) in enumerate(all_oogscores)
                             if puuid == user.puuid), 0)
 
-        if oog < 40:   emo, label = "🟥", "Grue bancale"
-        elif oog < 70: emo, label = "🟨", "Apprenti"
-        elif oog < 90: emo, label = "🟩", "Maître du Jade"
-        else:          emo, label = "🟦", "Skadoosh"
+        # Use v2 score if available and scorable
+        if oogscore_v2_result is not None and oogscore_v2_result.is_scorable:
+            v2_score = oogscore_v2_result.score
+            v2_grade = oogscore_v2_result.grade
+            if v2_score < 40:   emo, label = "🟥", "Grue bancale"
+            elif v2_score < 70: emo, label = "🟨", "Apprenti"
+            elif v2_score < 90: emo, label = "🟩", "Maître du Jade"
+            else:               emo, label = "🟦", "Skadoosh"
+            oog_value = f"{emo} **{v2_score:.1f}/100** — {label} ({v2_grade})"
+            if oogscore_v2_result.low_confidence:
+                oog_value += " ⚠️"
+        else:
+            if oog < 40:   emo, label = "🟥", "Grue bancale"
+            elif oog < 70: emo, label = "🟨", "Apprenti"
+            elif oog < 90: emo, label = "🟩", "Maître du Jade"
+            else:          emo, label = "🟦", "Skadoosh"
+            oog_value = f"{emo} **{oog}/100** — {label}"
 
-        oog_value = f"{emo} **{oog}/100** — {label}"
         if player_rank == 1:
             oog_value += "\n🏆 **MVP de la game !**"
         elif player_rank <= 3:
