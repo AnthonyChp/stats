@@ -71,7 +71,7 @@ async def _compute_scores(guild: discord.Guild) -> tuple[list[tuple[int, int]], 
     series_in_window = 0
     for s in series_list:
         in_window = not s.started_at or s.started_at >= cutoff.timestamp()
-        players = [did for did in (s.team_a + s.team_b) if did and did < 9_000_000_000_000_000]
+        players = [did for did in (s.team_a + s.team_b) if did and did > 9_999_999_999_999_999]
         debug["series_detail"].append({
             "id": s.id,
             "started_at": s.started_at,
