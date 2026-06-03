@@ -220,7 +220,19 @@ class AssidusRoleCog(commands.Cog):
         else:
             lines.append(f"\n❌ **Rôle ASSIDUS_ROLE_ID `{role_id}` introuvable dans le serveur !**")
 
-        await inter.followup.send("\n".join(lines), ephemeral=True)
+        # Découper en blocs ≤ 1900 caractères pour rester sous la limite Discord
+        content = "\n".join(lines)
+        chunks = []
+        while len(content) > 1900:
+            cut = content.rfind("\n", 0, 1900)
+            if cut == -1:
+                cut = 1900
+            chunks.append(content[:cut])
+            content = content[cut:].lstrip("\n")
+        chunks.append(content)
+
+        for chunk in chunks:
+            await inter.followup.send(chunk, ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:
