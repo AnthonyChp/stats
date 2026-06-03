@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     OOGLE_LEADERBOARD_CHANNEL_ID: int
     OOGLE_ROLE_ID: Optional[int] = None
 
+    # — Customs / Assidus —
+    ASSIDUS_ROLE_ID: Optional[int] = None
+    LOL_ROLE_ID: Optional[int] = None  # rôle @LeagueOfLegends (ping_all)
+
     # — CS2 Tracker —
     CS_MATCH_CHANNEL_ID: int
     CS_STEAM_IDS: str = ""
