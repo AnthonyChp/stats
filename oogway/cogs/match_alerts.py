@@ -673,11 +673,12 @@ def detect_rank_change(prev: Tuple[str, str, int], cur: Tuple[str, str, int]) ->
 
 # ─── UI View ──────────────────────────────────────────────────────────────────
 class HelpView(discord.ui.View):
-    def __init__(self, badges: List[str], lane: str, oog: int, breakdown: Dict[str, Tuple[float, float]]):
+    def __init__(self, badges: List[str], lane: str, oog: int, breakdown: Dict[str, Tuple[float, float]], oogscore_v2=None):
         super().__init__(timeout=None)
-        self.badges    = badges
-        self.oog       = oog
-        self.breakdown = breakdown
+        self.badges        = badges
+        self.oog           = oog
+        self.breakdown     = breakdown
+        self.oogscore_v2   = oogscore_v2
 
     @staticmethod
     def format_breakdown(bd: Dict[str, Tuple[float, float]]) -> str:
@@ -693,6 +694,32 @@ class HelpView(discord.ui.View):
         lines.append(f"Total: **{total:.1f} pts**")
         return "\n".join(lines)
 
+    @staticmethod
+    def format_breakdown_v2(result) -> str:
+        COMP_LABELS = {
+            "KDA": "KDA", "KP": "Kill Part.", "DMG": "Dégâts",
+            "ECO": "Éco", "OBJ": "Objectifs", "VIS": "Vision",
+            "UTL": "Utilité", "LANE": "Lane", "CC": "CC",
+        }
+        lines = []
+        for code, cb in result.components.items():
+            pct_norm = int(cb.normalized * 100)
+            lines.append(
+                f"• {COMP_LABELS.get(code, code):10} {pct_norm:3}e pct · ×{int(cb.weight*100)}% = {cb.contribution:.1f}pts"
+            )
+        lines.append("─" * 30)
+        base = sum(cb.contribution for cb in result.components.values())
+        lines.append(f"Base: {base:.1f}pts")
+        for mod_name, mod_val in result.modifiers.items():
+            label = {"win": "Victoire", "clutch": "Pentakill"}.get(mod_name, mod_name)
+            lines.append(f"{label}: {mod_val:+.1f}pts")
+        lines.append(f"**Total: {result.score:.1f}/100 ({result.grade})**")
+        source_line = f"Baseline: {result.baseline_source} (n={result.sample_size_used})"
+        if result.low_confidence:
+            source_line += " ⚠️ données limitées"
+        lines.append(f"_{source_line}_")
+        return "\n".join(lines)
+
     @discord.ui.button(label="ℹ️ Badges ?", style=discord.ButtonStyle.secondary)
     async def show_badges(self, i: discord.Interaction, b: discord.ui.Button):
         if not self.badges:
@@ -703,9 +730,13 @@ class HelpView(discord.ui.View):
 
     @discord.ui.button(label="ℹ️ OogScore ?", style=discord.ButtonStyle.primary)
     async def show_oog(self, i: discord.Interaction, b: discord.ui.Button):
-        header  = f"**OogScore {self.oog}/100**\n"
-        content = self.format_breakdown(self.breakdown)
-        await i.response.send_message(header + content, ephemeral=True, delete_after=15)
+        if self.oogscore_v2 is not None and self.oogscore_v2.is_scorable:
+            header  = f"**OogScore v2 — {self.oogscore_v2.score:.1f}/100 ({self.oogscore_v2.grade})**\n"
+            content = self.format_breakdown_v2(self.oogscore_v2)
+        else:
+            header  = f"**OogScore {self.oog}/100**\n"
+            content = self.format_breakdown(self.breakdown)
+        await i.response.send_message(header + content, ephemeral=True, delete_after=30)
 
 
 # ─── Cog ──────────────────────────────────────────────────────────────────────
@@ -1198,7 +1229,7 @@ class MatchAlertsCog(commands.Cog):
         else:
             embed.set_footer(text=f"Partie #{total_games}")
 
-        view = HelpView(badges, part.get("teamPosition", "UNKNOWN"), oog, breakdown)
+        view = HelpView(badges, part.get("teamPosition", "UNKNOWN"), oog, breakdown, oogscore_v2=oogscore_v2_result)
         await channel.send(embed=embed, files=files_to_send, view=view, delete_after=172800)
 
     @app_commands.command(name="alerts_test", description="Force un poll immédiat")
