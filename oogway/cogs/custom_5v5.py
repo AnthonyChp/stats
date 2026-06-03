@@ -43,7 +43,7 @@ def is_correct_channel(inter: Interaction) -> bool:
 
 # ───────────────────────────── Constantes ─────────────────────────
 GUILD_ID: Optional[int] = settings.DEBUG_GUILD_ID or None
-JOIN_PING_ROLE_ID = 1320082142369288244
+JOIN_PING_ROLE_ID = settings.JOIN_PING_ROLE_ID  # @LeagueOfLegends — ping /5v5
 BOT_ID_START = 9999999999999999  # ✅ IDs bots factices réalistes
 
 
@@ -1078,6 +1078,62 @@ class Custom5v5Cog(commands.Cog):
             join.message = await inter.channel.send(embed=embed, view=join)  # type: ignore[arg-type]
             await join.refresh()
             self.bot._current_match = join  # type: ignore[attr-defined]
+
+    # ─── /ping-custom ─────────────────────────────────────────────────────────
+    @app_commands.command(
+        name="ping-custom",
+        description="Ping les joueurs assidus (ou tout le rôle LoL) pour remplir la custom",
+    )
+    @app_commands.describe(ping_all="Si True, ping le rôle @LeagueOfLegends complet")
+    async def ping_custom(self, inter: Interaction, ping_all: bool = False) -> None:
+        # ── Vérification canal ────────────────────────────────────────────────
+        if not is_correct_channel(inter):
+            return await inter.response.send_message(
+                "❌ Commande réservée au salon customs.", ephemeral=True
+            )
+
+        # ── Vérification droits : créateur de la custom OU organisateur ───────
+        current_match: Optional[JoinView] = self.bot._current_match  # type: ignore[attr-defined]
+        is_creator = current_match is not None and inter.user.id == current_match.creator.id
+        is_organizer = False
+        if inter.guild:
+            org_role = inter.guild.get_role(settings.ORGANIZER_ROLE_ID)
+            is_organizer = org_role in getattr(inter.user, "roles", [])
+
+        if not is_creator and not is_organizer:
+            return await inter.response.send_message(
+                "⛔ Seul le créateur de la custom ou un organisateur peut utiliser cette commande.",
+                ephemeral=True,
+            )
+
+        await inter.response.defer(ephemeral=True)
+
+        # ── Choix du rôle à pinger ────────────────────────────────────────────
+        role = None
+        if ping_all:
+            role_id = settings.LOL_ROLE_ID or settings.JOIN_PING_ROLE_ID
+            if inter.guild and role_id:
+                role = inter.guild.get_role(role_id)
+        else:
+            if inter.guild and settings.ASSIDUS_ROLE_ID:
+                role = inter.guild.get_role(settings.ASSIDUS_ROLE_ID)
+
+        if role is None:
+            await inter.followup.send(
+                "⚠️ Rôle non configuré (vérifie ASSIDUS_ROLE_ID / LOL_ROLE_ID dans le .env).",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            await inter.channel.send(  # type: ignore[arg-type]
+                content=f"{role.mention} — **Il manque du monde pour la 5v5, rejoins !**",
+                allowed_mentions=discord.AllowedMentions(roles=True),
+            )
+            await inter.followup.send(f"✅ {role.name} pingé.", ephemeral=True)
+            logger.info("📣 /ping-custom par %s → rôle %s", inter.user.name, role.name)
+        except discord.HTTPException as e:
+            await inter.followup.send(f"❌ Erreur lors du ping : {e}", ephemeral=True)
 
     @five_v_five.error  # type: ignore[override]
     async def _err(self, inter: Interaction, err: app_commands.AppCommandError):
