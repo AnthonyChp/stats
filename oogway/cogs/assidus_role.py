@@ -74,8 +74,8 @@ async def _compute_scores(guild: discord.Guild) -> tuple[list[tuple[int, int]], 
         series_in_window += 1
         for did in s.team_a + s.team_b:
             if did and did < 9_000_000_000_000_000:
-                scores[did] = scores.get(did, 0) + 1
-                debug["customs"][str(did)] = debug["customs"].get(str(did), 0) + 1
+                scores[did] = scores.get(did, 0) + 10
+                debug["customs"][str(did)] = debug["customs"].get(str(did), 0) + 10
     debug["series_in_window"] = series_in_window
 
     # ── Résoudre les membres via API (get_member utilise le cache, fetch_member fait un appel API) ──
