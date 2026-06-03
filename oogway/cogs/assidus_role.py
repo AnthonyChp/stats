@@ -67,15 +67,25 @@ async def _compute_scores(guild: discord.Guild) -> tuple[list[tuple[int, int]], 
     # ── Customs (historique Redis) ────────────────────────────────────────────
     series_list = await load_all_series()
     debug["total_series_redis"] = len(series_list)
+    debug["series_detail"] = []
     series_in_window = 0
     for s in series_list:
-        if s.started_at and s.started_at < cutoff.timestamp():
+        in_window = not s.started_at or s.started_at >= cutoff.timestamp()
+        players = [did for did in (s.team_a + s.team_b) if did and did < 9_000_000_000_000_000]
+        debug["series_detail"].append({
+            "id": s.id,
+            "started_at": s.started_at,
+            "in_window": in_window,
+            "team_a": s.team_a,
+            "team_b": s.team_b,
+            "players_count": len(players),
+        })
+        if not in_window:
             continue
         series_in_window += 1
-        for did in s.team_a + s.team_b:
-            if did and did < 9_000_000_000_000_000:
-                scores[did] = scores.get(did, 0) + 10
-                debug["customs"][str(did)] = debug["customs"].get(str(did), 0) + 10
+        for did in players:
+            scores[did] = scores.get(did, 0) + 10
+            debug["customs"][str(did)] = debug["customs"].get(str(did), 0) + 10
     debug["series_in_window"] = series_in_window
 
     # ── Résoudre les membres via API (get_member utilise le cache, fetch_member fait un appel API) ──
@@ -209,19 +219,40 @@ class AssidusRoleCog(commands.Cog):
             "",
         ]
 
-        # Scores finaux
+        # Scores finaux — résoudre les noms via fetch_member
+        member_cache: dict[int, str] = {}
+        for did_str in dbg["scores_final"]:
+            did = int(did_str)
+            m = inter.guild.get_member(did)
+            if m is None:
+                try:
+                    m = await inter.guild.fetch_member(did)
+                except discord.HTTPException:
+                    pass
+            member_cache[did] = m.display_name if m else f"❓ absent ({did_str})"
+
         if dbg["scores_final"]:
-            lines.append("**Scores calculés (discord_id → score) :**")
+            lines.append("**Scores calculés :**")
             for did_str, sc in sorted(dbg["scores_final"].items(), key=lambda x: -x[1]):
-                member = inter.guild.get_member(int(did_str))
-                name = member.display_name if member else f"❓ non trouvé dans le guild ({did_str})"
-                rank_str = " ✅ top10" if any(d == int(did_str) for d, _ in top) else ""
-                lines.append(f"  `{name}` — {sc} pts{rank_str}")
+                name = member_cache.get(int(did_str), f"❓ ({did_str})")
+                ranked_pts = dbg["ranked"].get(did_str, 0)
+                custom_pts = dbg["customs"].get(did_str, 0)
+                rank_str = " ✅" if any(d == int(did_str) for d, _ in top) else ""
+                lines.append(f"  `{name}` — {sc} pts (ranked:{ranked_pts} + customs:{custom_pts}){rank_str}")
         else:
-            lines.append("⚠️ **Aucun score calculé** — vérifie que des joueurs ont fait `/link` et ont joué des ranked récemment.")
+            lines.append("⚠️ **Aucun score calculé.**")
 
         if dbg["not_in_guild"]:
-            lines.append(f"\n⚠️ {len(dbg['not_in_guild'])} joueur(s) avec score mais absents du serveur : {dbg['not_in_guild']}")
+            lines.append(f"\n⚠️ {len(dbg['not_in_guild'])} joueur(s) absent(s) du serveur.")
+
+        # Détail des séries
+        lines.append("\n**Séries Redis (détail) :**")
+        for sd in dbg.get("series_detail", []):
+            import datetime as _dt
+            ts = sd["started_at"]
+            date_str = _dt.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d") if ts else "?"
+            flag = "✅" if sd["in_window"] else "❌ hors fenêtre"
+            lines.append(f"  `{sd['id']}` {date_str} {flag} — {sd['players_count']} joueurs (A:{sd['team_a']} B:{sd['team_b']})")
 
         # Rôle
         role_id = settings.ASSIDUS_ROLE_ID
