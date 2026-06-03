@@ -32,13 +32,12 @@ class ToVoteView(discord.ui.View):
         target: discord.Member,
         duration: int,
     ):
-        super().__init__(timeout=VOTE_DURATION)
+        super().__init__(timeout=None)
         self.eligible_ids = eligible_ids
         self.target = target
         self.duration = duration
         self.votes: dict[int, bool] = {}        # user_id → True=Oui, False=Non
         self.voter_names: dict[int, str] = {}   # user_id → display_name
-        self._finished = asyncio.Event()
         self.message: Optional[discord.Message] = None
         self.end_ts: int = 0
 
@@ -128,13 +127,11 @@ class ToVoteView(discord.ui.View):
     async def btn_non(self, interaction: Interaction, button: discord.ui.Button):
         await self._handle_vote(interaction, False)
 
-    async def on_timeout(self) -> None:
+    def close(self) -> None:
+        """Désactive les boutons sans passer par le timeout de la View."""
         for item in self.children:
             item.disabled = True  # type: ignore[attr-defined]
-        self._finished.set()
-
-    async def wait_result(self) -> None:
-        await self._finished.wait()
+        self.stop()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -197,9 +194,10 @@ class ToCog(commands.Cog):
         message = await interaction.original_response()
         view.message = message
 
-        # ── Attente de fin du vote ────────────────────────────────────────────
-        await view.wait_result()
+        # ── Attente fixe de 60s (indépendante des interactions) ──────────────
+        await asyncio.sleep(VOTE_DURATION)
 
+        view.close()
         await message.edit(embed=view.build_embed(final=True), view=view)
 
         if not view.passed:
