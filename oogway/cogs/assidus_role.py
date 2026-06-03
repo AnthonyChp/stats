@@ -21,6 +21,7 @@ TZ_PARIS = ZoneInfo("Europe/Paris")
 
 TOP_N   = 10
 WINDOW  = 30  # jours glissants
+CUSTOM_POINTS  = 10
 
 
 async def _compute_scores(guild: discord.Guild) -> tuple[list[tuple[int, int]], dict]:
@@ -74,8 +75,8 @@ async def _compute_scores(guild: discord.Guild) -> tuple[list[tuple[int, int]], 
         series_in_window += 1
         for did in s.team_a + s.team_b:
             if did and did < 9_000_000_000_000_000:
-                scores[did] = scores.get(did, 0) + 1
-                debug["customs"][str(did)] = debug["customs"].get(str(did), 0) + 1
+                scores[did] = scores.get(did, 0) + CUSTOM_POINTS
+                debug["customs"][str(did)] = debug["customs"].get(str(did), 0) + CUSTOM_POINTS
     debug["series_in_window"] = series_in_window
 
     # ── Résoudre les membres via API (get_member utilise le cache, fetch_member fait un appel API) ──
