@@ -55,6 +55,7 @@ EXTENSIONS: list[str] = [
     "oogway.cogs.assidus_role",
     "oogway.cogs.to",
     "oogway.cogs.oogscore_admin",
+    "oogway.oogscore.analyse.command",
 ]
 
 
