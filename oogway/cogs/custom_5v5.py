@@ -930,7 +930,7 @@ class Custom5v5Cog(commands.Cog):
         logger.info(f"♻️ Restauration custom en phase '{state.get('phase')}'")
 
         try:
-            channel = self.bot.get_channel(state["channel_id"])
+            channel = self.bot.get_channel(state["channel_id"]) or await self.bot.fetch_channel(state["channel_id"])
             if not channel:
                 logger.warning("Channel introuvable, abandon restauration")
                 await clear_match_state()
@@ -973,6 +973,9 @@ class Custom5v5Cog(commands.Cog):
         join_view.display_cache = state.get("display_cache", {})  # ✅ restaurer display_cache
         join_view.message = message
         join_view.embed = message.embeds[0] if message.embeds else discord.Embed()
+
+        # Enregistrer la vue AVANT l'edit pour que discord.py route les interactions
+        self.bot.add_view(join_view, message_id=message.id)
 
         # Réattacher la vue au message
         await message.edit(view=join_view)
