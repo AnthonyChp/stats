@@ -310,9 +310,18 @@ class LeaderboardCog(commands.Cog):
                 try:
                     tier, div, lp, wr, wins, losses = await self._get_rank(u, queue_id)
                     if tier in TIERS:
-                        delta_lp = await self._get_monthly_delta(u, queue_id, tier, div, lp)
-                        streak_count, is_win = await self._get_streak(u, queue_id)
-                        prev_pos = await self._get_previous_position(u, queue_id)
+                        try:
+                            delta_lp = await self._get_monthly_delta(u, queue_id, tier, div, lp)
+                        except Exception:
+                            delta_lp = 0
+                        try:
+                            streak_count, is_win = await self._get_streak(u, queue_id)
+                        except Exception:
+                            streak_count, is_win = 0, True
+                        try:
+                            prev_pos = await self._get_previous_position(u, queue_id)
+                        except Exception:
+                            prev_pos = None
                         entries.append((u, tier, div, lp, wr, wins, losses, delta_lp, streak_count, is_win, prev_pos))
                 except Exception as e:
                     log.warning(f"Fetch error for {u.discord_id}: {e}")
