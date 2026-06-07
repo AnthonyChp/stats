@@ -143,6 +143,11 @@ class JoinView(discord.ui.View):
         self.display_cache: dict[int, str] = {}   # ✅ display name — pour les selects
         self.message: Optional[discord.Message] = None
         self.embed: Optional[discord.Embed] = None
+        self._bump_task: Optional[asyncio.Task] = None
+
+    def stop(self) -> None:
+        self.stop_bump_task()
+        super().stop()
 
     # ───────────────────────────── Error handler ──────────────────
     async def on_error(self, interaction: Interaction, error: Exception, item):
@@ -300,6 +305,64 @@ class JoinView(discord.ui.View):
             "message_id": self.message.id,
             "channel_id": self.message.channel.id,
         })
+
+    # ───────────────────────────── Auto-bump ─────────────────────────────────
+    async def repost(self) -> None:
+        """Supprime l'ancien message et reposte l'embed en bas du channel."""
+        if not (self.message and self.embed):
+            return
+        channel = self.message.channel
+        try:
+            await self.message.delete()
+        except Exception:
+            pass
+        new_msg = await channel.send(embed=self.embed, view=self)
+        self.message = new_msg
+        # Mettre à jour le message_id dans Redis
+        await save_match_state({
+            "phase": "join",
+            "creator_id": self.creator.id,
+            "players": list(self.players),
+            "name_cache": self.name_cache,
+            "display_cache": self.display_cache,
+            "bo": self.bo,
+            "fearless": self.fearless,
+            "captain_pick": self.captain_pick,
+            "message_id": new_msg.id,
+            "channel_id": new_msg.channel.id,
+        })
+
+    def start_bump_task(self) -> None:
+        """Lance la tâche de vérification auto-bump (10 min, ≥5 msgs après l'embed)."""
+        if self._bump_task and not self._bump_task.done():
+            return
+        self._bump_task = asyncio.create_task(self._bump_loop())
+
+    def stop_bump_task(self) -> None:
+        if self._bump_task and not self._bump_task.done():
+            self._bump_task.cancel()
+
+    async def _bump_loop(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(600)  # 10 min
+                if not (self.message and self.embed):
+                    break
+                channel = self.message.channel
+                try:
+                    # Compter les messages apparus APRÈS l'embed
+                    count = 0
+                    async for _ in channel.history(limit=20, after=self.message):
+                        count += 1
+                        if count >= 5:
+                            break
+                    if count >= 5:
+                        logger.info(f"🔁 Auto-bump lobby ({count} msgs depuis l'embed)")
+                        await self.repost()
+                except Exception as e:
+                    logger.warning(f"Bump loop erreur: {e}")
+        except asyncio.CancelledError:
+            pass
 
     # ───────────────────────────── Phase "confirm / reroll / captains" ─────────
     async def show_confirm(self, inter: Interaction) -> None:
@@ -981,6 +1044,7 @@ class Custom5v5Cog(commands.Cog):
         await message.edit(view=join_view)
         await join_view.refresh()
 
+        join_view.start_bump_task()
         self.bot._current_match = join_view  # type: ignore[attr-defined]
         logger.info(f"✅ Custom restaurée avec {len(join_view.players)}/10 joueurs")
 
@@ -1080,6 +1144,7 @@ class Custom5v5Cog(commands.Cog):
             join.embed = embed
             join.message = await inter.channel.send(embed=embed, view=join)  # type: ignore[arg-type]
             await join.refresh()
+            join.start_bump_task()
             self.bot._current_match = join  # type: ignore[attr-defined]
 
     # ─── /ping-custom ─────────────────────────────────────────────────────────
