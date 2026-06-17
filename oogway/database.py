@@ -156,3 +156,20 @@ def get_linked_puuids(session, discord_id: str) -> list[str]:
         a.puuid for a in session.query(LinkedAccount).filter_by(discord_id=str(discord_id)).all()
     )
     return puuids
+
+
+def get_all_accounts(session) -> list:
+    """Tous les comptes Riot suivis : principaux (User) + smurfs (LinkedAccount).
+
+    Les deux modèles exposent `discord_id`, `puuid`, `region` et
+    `summoner_name`, donc les consommateurs (leaderboard, match_alerts) peuvent
+    les traiter de manière interchangeable."""
+    return session.query(User).all() + session.query(LinkedAccount).all()
+
+
+def get_all_puuids(session) -> set[str]:
+    """Ensemble de tous les puuids suivis (principaux + smurfs)."""
+    return (
+        {u.puuid for u in session.query(User).all()}
+        | {a.puuid for a in session.query(LinkedAccount).all()}
+    )

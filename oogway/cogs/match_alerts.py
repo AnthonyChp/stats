@@ -16,7 +16,10 @@ from discord.ext import commands, tasks
 from PIL import Image
 from sqlalchemy.exc import IntegrityError
 
-from oogway.database import Match, SessionLocal, User, init_db, MatchParticipant, OogScoreRecord
+from oogway.database import (
+    Match, SessionLocal, User, LinkedAccount, init_db, MatchParticipant,
+    OogScoreRecord, get_all_accounts, get_all_puuids,
+)
 from oogway.riot.client import RiotClient
 from oogway.config import settings
 from oogway.cogs.profile import r_get, r_set
@@ -886,8 +889,8 @@ class MatchAlertsCog(commands.Cog):
 
     @tasks.loop(minutes=5)
     async def poll_matches(self):
-        users = self.db.query(User).all()
-        log.info(f"Polling {len(users)} users")
+        users = get_all_accounts(self.db)  # comptes principaux + smurfs
+        log.info(f"Polling {len(users)} accounts")
         for u in users:
             try:
                 await self.handle_user(u)
@@ -994,7 +997,15 @@ class MatchAlertsCog(commands.Cog):
             same_team_puuids = {p["puuid"] for p in info["participants"]
                                 if p["teamId"] == part["teamId"] and p["puuid"] != user.puuid}
             if same_team_puuids:
-                for mate in self.db.query(User).filter(User.puuid.in_(same_team_puuids)).all():
+                mates = (
+                    self.db.query(User).filter(User.puuid.in_(same_team_puuids)).all()
+                    + self.db.query(LinkedAccount).filter(LinkedAccount.puuid.in_(same_team_puuids)).all()
+                )
+                seen_ids: set[str] = set()
+                for mate in mates:
+                    if mate.discord_id in seen_ids:
+                        continue
+                    seen_ids.add(mate.discord_id)
                     du = await self._get_cached_user(mate.discord_id)
                     duo_names.append(du.display_name if du else mate.puuid[:6])
 
@@ -1021,7 +1032,7 @@ class MatchAlertsCog(commands.Cog):
 
         # Persist all 10 participants for OogScore v2 baseline building
         game_duration_seconds = info.get("gameDuration", 0)
-        linked_puuids = {u.puuid for u in self.db.query(User).all()}
+        linked_puuids = get_all_puuids(self.db)  # principaux + smurfs
         try:
             for p in info["participants"]:
                 fields = participant_to_db_fields(

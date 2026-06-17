@@ -186,6 +186,11 @@ class LinkCog(commands.Cog):
     )
     @app_commands.describe(summoner_name="Nom d'invocateur ou RiotID du smurf à retirer")
     async def unlink(self, interaction: discord.Interaction, summoner_name: str):
+        if interaction.channel_id != settings.LINK_CHANNEL_ID:
+            return await interaction.response.send_message(
+                f"❌ Utilise cette commande dans <#{settings.LINK_CHANNEL_ID}>.",
+                ephemeral=True
+            )
         await interaction.response.defer(ephemeral=True)
         try:
             puuid, real_name = await self._resolve_account(summoner_name)
