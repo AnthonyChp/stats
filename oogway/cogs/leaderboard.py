@@ -13,7 +13,7 @@ from collections import Counter
 import discord
 from discord.ext import commands, tasks
 
-from oogway.database import SessionLocal, User, init_db
+from oogway.database import SessionLocal, User, LinkedAccount, init_db, get_all_accounts
 from oogway.riot.client import RiotClient
 from oogway.config import settings
 from oogway.cogs.profile import r_get, r_set
@@ -234,7 +234,7 @@ class LeaderboardCog(commands.Cog):
         now = dt.datetime.now(dt.timezone.utc)
         # Si on est le 1er du mois, sauvegarder les LP actuels
         if now.day == 1 and now.hour < 6:
-            users = self.db.query(User).all()
+            users = get_all_accounts(self.db)  # principaux + smurfs
             for queue_id in QUEUE_ORDERS:
                 for user in users:
                     try:
@@ -301,11 +301,11 @@ class LeaderboardCog(commands.Cog):
                 return cached_data
         
         log.info(f"♻️ Refreshing leaderboard cache for queue {queue_id}")
-        
-        users = self.db.query(User).all()
+
+        users = get_all_accounts(self.db)  # comptes principaux + smurfs
         entries: List[Tuple] = []
 
-        async def fetch(u: User):
+        async def fetch(u):
             async with self.sem:
                 try:
                     tier, div, lp, wr, wins, losses = await self._get_rank(u, queue_id)
@@ -478,7 +478,11 @@ class LeaderboardCog(commands.Cog):
                 
                 # ✅ Utiliser le cache Discord user (pas de fetch !)
                 name, avatar = await self._get_discord_user(user.discord_id)
-                
+
+                # Distinguer les smurfs (même membre Discord, autre compte Riot)
+                if isinstance(user, LinkedAccount):
+                    name = f"{name} 🎭 ({user.summoner_name})"
+
                 # Position change indicator
                 if prev_pos:
                     if prev_pos > idx:

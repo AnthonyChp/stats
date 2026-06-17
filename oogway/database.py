@@ -39,6 +39,22 @@ class User(Base):
     region = Column(String, nullable=False, index=True)
 
 
+class LinkedAccount(Base):
+    """Comptes secondaires (smurf / alt) rattachés à un compte Discord.
+
+    Le compte *principal* reste dans la table `users` (1 par Discord). Les
+    smurfs vivent ici pour ne pas polluer les itérations `query(User).all()`
+    (leaderboard, match_alerts, etc.) qui doivent compter une personne une
+    seule fois. `puuid` est unique pour empêcher qu'un même compte Riot soit
+    lié deux fois (anti-usurpation)."""
+    __tablename__ = 'linked_accounts'
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    discord_id    = Column(String, ForeignKey('users.discord_id'), nullable=False, index=True)
+    puuid         = Column(String, unique=True, nullable=False, index=True)
+    summoner_name = Column(String, nullable=False)
+    region        = Column(String, nullable=False)
+
+
 class Match(Base):
     __tablename__ = 'matches'
     match_id = Column(String, primary_key=True, index=True)
@@ -116,3 +132,44 @@ def init_db():
     # Import local pour éviter le cycle d'import
     from oogway.db import riot_cache  # noqa: F401
     Base.metadata.create_all(bind=engine)
+
+
+# =============================================================
+# Helpers comptes liés (principal + smurfs)
+# =============================================================
+def find_puuid_owner(session, puuid: str):
+    """Retourne le discord_id propriétaire d'un puuid (principal OU smurf), sinon None."""
+    user = session.query(User).filter_by(puuid=puuid).first()
+    if user:
+        return user.discord_id
+    smurf = session.query(LinkedAccount).filter_by(puuid=puuid).first()
+    return smurf.discord_id if smurf else None
+
+
+def get_linked_puuids(session, discord_id: str) -> list[str]:
+    """Tous les puuids d'un membre : compte principal + smurfs."""
+    puuids: list[str] = []
+    user = session.get(User, str(discord_id))
+    if user:
+        puuids.append(user.puuid)
+    puuids.extend(
+        a.puuid for a in session.query(LinkedAccount).filter_by(discord_id=str(discord_id)).all()
+    )
+    return puuids
+
+
+def get_all_accounts(session) -> list:
+    """Tous les comptes Riot suivis : principaux (User) + smurfs (LinkedAccount).
+
+    Les deux modèles exposent `discord_id`, `puuid`, `region` et
+    `summoner_name`, donc les consommateurs (leaderboard, match_alerts) peuvent
+    les traiter de manière interchangeable."""
+    return session.query(User).all() + session.query(LinkedAccount).all()
+
+
+def get_all_puuids(session) -> set[str]:
+    """Ensemble de tous les puuids suivis (principaux + smurfs)."""
+    return (
+        {u.puuid for u in session.query(User).all()}
+        | {a.puuid for a in session.query(LinkedAccount).all()}
+    )
