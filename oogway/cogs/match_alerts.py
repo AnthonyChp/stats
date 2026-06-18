@@ -6,7 +6,6 @@ import io
 import logging
 import math
 from typing import Any, Dict, List, Optional, Tuple
-from functools import lru_cache
 from dataclasses import dataclass
 
 import aiohttp

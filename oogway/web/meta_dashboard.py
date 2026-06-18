@@ -12,7 +12,7 @@ import io
 import asyncio
 from typing import Dict, List, Tuple, Any
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Header, HTTPException, Depends
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -61,8 +61,11 @@ async def meta_load() -> Dict[str, Dict[str, int]]:
         return {"picks": {}, "bans": {}, "wins": {}}
     try:
         data = json.loads(raw) if isinstance(raw, str) else raw
-    except Exception:
-        data = raw
+    except (json.JSONDecodeError, TypeError):
+        data = None
+    if not isinstance(data, dict):
+        # Donnée Redis corrompue / inattendue → on renvoie une meta vide
+        return {"picks": {}, "bans": {}, "wins": {}}
     data.setdefault("picks", {})
     data.setdefault("bans", {})
     data.setdefault("wins", {})
@@ -155,12 +158,24 @@ def _csv_from_unified(unified: List[Tuple[str,int,int,int,float]]) -> bytes:
 # --------------------------- FastAPI -----------------------------
 app = FastAPI(title=APP_TITLE)
 
+# CORS : par défaut aucune origine cross-site (l'UI intégrée est servie en
+# same-origin et n'a pas besoin de CORS). Surcharge explicite via CORS_ORIGINS.
+_cors_env = os.getenv("CORS_ORIGINS", "")
+_allow_origins = [o.strip() for o in _cors_env.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("CORS_ORIGINS", "*").split(","),
+    allow_origins=_allow_origins,
     allow_methods=["GET"],
     allow_headers=["*"],
 )
+
+# Auth optionnelle : si DASHBOARD_API_KEY est défini, les endpoints /api/*
+# exigent l'en-tête X-API-Key. Sinon, comportement inchangé (non bloquant).
+DASHBOARD_API_KEY = os.getenv("DASHBOARD_API_KEY")
+
+async def require_api_key(x_api_key: str | None = Header(None)):
+    if DASHBOARD_API_KEY and x_api_key != DASHBOARD_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 @app.get("/healthz")
 async def healthz():
@@ -170,11 +185,11 @@ async def healthz():
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-@app.get("/api/meta")
+@app.get("/api/meta", dependencies=[Depends(require_api_key)])
 async def api_meta(
     top: int = 10,
     min_picks: int = 10,
-    q: str | None = Query(None, description="Filtre texte sur champion (contains)"),
+    q: str | None = Query(None, max_length=64, description="Filtre texte sur champion (contains)"),
     sort: str = Query("presence", regex="^(presence|picks|bans|wr)$"),
     order: str = Query("desc", regex="^(asc|desc)$"),
 ):
@@ -219,11 +234,11 @@ async def api_meta(
     }
     return JSONResponse(payload)
 
-@app.get("/api/meta/export")
+@app.get("/api/meta/export", dependencies=[Depends(require_api_key)])
 async def api_meta_export(
     fmt: str = Query("csv", regex="^(csv|json)$"),
     min_picks: int = 1,
-    q: str | None = None,
+    q: str | None = Query(None, max_length=64),
     sort: str = Query("presence", regex="^(presence|picks|bans|wr)$"),
     order: str = Query("desc", regex="^(asc|desc)$"),
 ):
@@ -625,4 +640,5 @@ load();
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("oogway.web.meta_dashboard:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), reload=True)
+    _reload = os.getenv("DASHBOARD_RELOAD", "").lower() in ("1", "true", "yes")
+    uvicorn.run("oogway.web.meta_dashboard:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), reload=_reload)
