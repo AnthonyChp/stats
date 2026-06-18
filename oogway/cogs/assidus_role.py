@@ -13,7 +13,7 @@ from discord.ext import commands, tasks
 from sqlalchemy import func
 
 from oogway.config import settings
-from oogway.database import SessionLocal, Match, User
+from oogway.database import SessionLocal, Match, User, get_all_accounts
 from oogway.cogs.historique import load_all_series
 
 logger = logging.getLogger(__name__)
@@ -49,10 +49,12 @@ async def _compute_scores(guild: discord.Guild) -> tuple[list[tuple[int, int]], 
 
         debug["ranked_puuids_count"] = len(ranked)
 
+        # Inclure les smurfs (LinkedAccount) pour que leurs parties classées
+        # comptent aussi dans le score du membre, pas seulement le compte principal.
         puuid_to_discord: dict[str, int] = {}
-        all_users = db.query(User).all()
-        debug["total_users_linked"] = len(all_users)
-        for u in all_users:
+        all_accounts = get_all_accounts(db)  # principaux + smurfs
+        debug["total_users_linked"] = len(all_accounts)
+        for u in all_accounts:
             puuid_to_discord[u.puuid] = int(u.discord_id)
 
     scores: dict[int, int] = {}
