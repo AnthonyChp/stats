@@ -139,6 +139,29 @@ def make_sprite_sync(item_ids: list[int]) -> discord.File | None:
 # ------------- Graphiques modernes ---------------------------
 # =============================================================
 
+# Décodage du "LP cumulé" produit par match_alerts.rank_to_absolute :
+# value = tier_idx*400 + div_band*100 + lp  (Master+ : 2800 + lp).
+_CURVE_TIERS = ["Iron", "Bronze", "Silver", "Gold", "Platinum",
+                "Emerald", "Diamond", "Master", "Grandmaster", "Challenger"]
+_MASTER_BASE = 7 * 400  # index de Master * 400
+
+def _abs_to_rank_lp(value: int) -> tuple[str, int]:
+    """LP cumulé -> (libellé de rang, LP dans la division)."""
+    value = int(value)
+    if value >= _MASTER_BASE:
+        return "Master+", value - _MASTER_BASE
+    if value < 0:
+        return "Unranked", 0
+    tier_idx = min(value // 400, 6)
+    rem = value % 400
+    div = ["IV", "III", "II", "I"][min(rem // 100, 3)]
+    return f"{_CURVE_TIERS[tier_idx]} {div}", rem % 100
+
+def _abs_label(value: int) -> str:
+    rank, lp = _abs_to_rank_lp(value)
+    return f"{rank} · {lp} LP"
+
+
 def create_modern_lp_curve(lp_hist: dict, matches: list, puuid: str) -> discord.File:
     """
     Crée une courbe LP moderne avec :
@@ -196,13 +219,13 @@ def create_modern_lp_curve(lp_hist: dict, matches: list, puuid: str) -> discord.
     ax.imshow(gradient, extent=extent, aspect='auto', alpha=0.03, 
               cmap='YlOrBr', origin='lower')
     
-    # Zone de promo (si proche de 100 LP)
-    if any(lp >= 75 for lp in lp_values):
-        promo_line = 100
-        ax.axhline(y=promo_line, color=GOLD_COLOR, linestyle='--', 
-                   linewidth=1.5, alpha=0.3, label='Promo')
-        ax.fill_between(timestamps, promo_line, lp_max + lp_range * 0.1, 
-                       color=GOLD_COLOR, alpha=0.05)
+    # Frontières de division (multiples de 100 en LP cumulé) : matérialise
+    # visuellement les passages d'une division à l'autre.
+    first_band = (lp_min // 100) * 100
+    for band in range(int(first_band), int(lp_max) + 1, 100):
+        if lp_min <= band <= lp_max:
+            ax.axhline(y=band, color=GOLD_COLOR, linestyle='--',
+                       linewidth=1.0, alpha=0.18)
     
     # Trend line (pointillés)
     ax.plot(timestamps, trend_line(x_numeric), color=ACCENT_COLOR, 
@@ -238,7 +261,7 @@ def create_modern_lp_curve(lp_hist: dict, matches: list, puuid: str) -> discord.
     max_idx = lp_values.index(lp_max)
     min_idx = lp_values.index(lp_min)
     
-    ax.annotate(f'{lp_max} LP', 
+    ax.annotate(_abs_label(lp_max),
                 xy=(timestamps[max_idx], lp_max),
                 xytext=(0, 15), textcoords='offset points',
                 ha='center', fontsize=9, color=WIN_COLOR,
@@ -247,7 +270,7 @@ def create_modern_lp_curve(lp_hist: dict, matches: list, puuid: str) -> discord.
                 arrowprops=dict(arrowstyle='->', color=WIN_COLOR, lw=1.5))
     
     if lp_min != lp_max:
-        ax.annotate(f'{lp_min} LP', 
+        ax.annotate(_abs_label(lp_min),
                     xy=(timestamps[min_idx], lp_min),
                     xytext=(0, -15), textcoords='offset points',
                     ha='center', fontsize=9, color=LOSS_COLOR,
@@ -269,7 +292,7 @@ def create_modern_lp_curve(lp_hist: dict, matches: list, puuid: str) -> discord.
     
     # Labels et titres
     ax.set_xlabel('Date', fontsize=11, color=TEXT_COLOR, fontweight='bold')
-    ax.set_ylabel('LP', fontsize=11, color=TEXT_COLOR, fontweight='bold')
+    ax.set_ylabel('LP cumulé', fontsize=11, color=TEXT_COLOR, fontweight='bold')
     
     # Format des dates
     ax.xaxis.set_major_formatter(DateFormatter('%d %b'))
@@ -286,8 +309,8 @@ def create_modern_lp_curve(lp_hist: dict, matches: list, puuid: str) -> discord.
             fontsize=14, fontweight='bold', color=GOLD_COLOR, 
             ha='center', va='top')
     
-    # Sous-titre avec delta
-    subtitle = f'{delta_symbol} {abs(lp_delta):+.0f} LP  •  Range: {lp_min}-{lp_max} LP'
+    # Sous-titre avec delta (lp_delta = variation NETTE de LP sur la période)
+    subtitle = f'{delta_symbol} {lp_delta:+.0f} LP net  •  {_abs_label(lp_min)} → {_abs_label(lp_max)}'
     ax.text(0.5, 1.02, subtitle, transform=ax.transAxes, 
             fontsize=10, color=TEXT_COLOR, ha='center', va='top', alpha=0.8)
     
@@ -307,9 +330,9 @@ def create_modern_lp_curve(lp_hist: dict, matches: list, puuid: str) -> discord.
     
     # Box avec stats en bas à droite
     stats_text = (
-        f'Départ: {lp_start} LP\n'
-        f'Actuel: {lp_end} LP\n'
-        f'Peak: {lp_max} LP'
+        f'Départ: {_abs_label(lp_start)}\n'
+        f'Actuel: {_abs_label(lp_end)}\n'
+        f'Peak:   {_abs_label(lp_max)}'
     )
     
     props = dict(boxstyle='round,pad=0.5', facecolor=BG_COLOR, 
@@ -497,7 +520,7 @@ class ProfileCog(commands.Cog):
             wards_k    += p.get("wardsKilled",0)
 
         mastery  = await fetch_mastery(puid)
-        lp_hist  = await r_get(f"lp_hist:{puid}:420") or {}  # SoloQ uniquement
+        lp_hist  = await r_get(f"lp_hist_v2:{puid}:420") or {}  # SoloQ, LP cumulé (v2)
         # Garde anti-corruption : la valeur Redis peut être double-encodée (str au
         # lieu de dict) → on re-décode, et on retombe sur {} si ce n'est pas un dict.
         if isinstance(lp_hist, str):
@@ -695,15 +718,15 @@ class ProfileCog(commands.Cog):
                 e3.set_image(url="attachment://lp_curve.png")
                 page2file[3] = [curve_file]
                 
-                # Stats textuelles
+                # Stats textuelles (valeurs en LP cumulé → on décode pour l'affichage)
                 lp_values = list(lp_hist_int.values())
-                delta = lp_values[-1] - lp_values[0]
+                delta = lp_values[-1] - lp_values[0]  # variation nette de LP
                 peak = max(lp_values)
-                
+
                 arrow = "📈" if delta >= 0 else "📉"
                 e3.description = (
-                    f"{arrow} **{abs(delta)} LP** sur 30 jours\n"
-                    f"🏔️ Peak: **{peak} LP**\n"
+                    f"{arrow} **{delta:+d} LP** net sur 30 jours\n"
+                    f"🏔️ Peak: **{_abs_label(peak)}**\n"
                     f"📊 {len(lp_hist_int)} points de données"
                 )
         else:
