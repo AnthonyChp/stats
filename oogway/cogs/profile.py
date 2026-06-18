@@ -9,7 +9,7 @@
 # =============================================================
 
 from __future__ import annotations
-import io, json, time, datetime as dt
+import asyncio, io, json, time, datetime as dt
 from collections import Counter
 from typing import Dict, List
 
@@ -431,13 +431,13 @@ def create_performance_heatmap(matches: list, puuid: str) -> discord.File:
 async def fetch_ranked(puid):
     key=f"ranked:{puid}"; d=await r_get(key)
     if d is None:
-        d=RIOT.get_league_entries_by_puuid(REGION, puid); await r_set(key,d)
+        d=await RIOT.get_league_entries_by_puuid(REGION, puid); await r_set(key,d)
     return {q["queueType"]:q for q in d}
 
 async def fetch_match(mid):
     key=f"match:{mid}"; m=await r_get(key)
     if m is None:
-        m=RIOT.get_match_by_id(REGION, mid); await r_set(key,m)
+        m=await RIOT.get_match_by_id(REGION, mid); await r_set(key,m)
     return m
 
 async def fetch_mastery(puid):
@@ -445,13 +445,17 @@ async def fetch_mastery(puid):
     if top is None:
         url=(f"https://{REGION.lower()}.api.riotgames.com"
              f"/lol/champion-mastery/v4/champion-masteries/by-puuid/{puid}/top")
-        top=RIOT._request(url)[:5]; await r_set(key,top,86400)
+        top=(await RIOT._request(url))[:5]; await r_set(key,top,86400)
     cmap=await r_get("champ_map")
     if cmap is None:
-        ver=_ensure_dd_version()
-        data=requests.get(
-            f"https://ddragon.leagueoflegends.com/cdn/{ver}/data/en_US/champion.json"
-        ).json()
+        # requests.get est synchrone → on l'exécute hors de l'event loop
+        ver=await asyncio.to_thread(_ensure_dd_version)
+        data=await asyncio.to_thread(
+            lambda: requests.get(
+                f"https://ddragon.leagueoflegends.com/cdn/{ver}/data/en_US/champion.json",
+                timeout=5,
+            ).json()
+        )
         cmap={int(v["key"]):v["id"] for v in data["data"].values()}
         await r_set("champ_map",cmap,604800)
     for d in top: d["championName"]=cmap.get(d["championId"], str(d["championId"]))
@@ -461,7 +465,11 @@ async def fetch_mastery(puid):
 # ----------------------- Cog Profile -------------------------
 # =============================================================
 class ProfileCog(commands.Cog):
-    def __init__(self, bot): self.bot=bot
+    def __init__(self, bot):
+        self.bot=bot
+        # matplotlib (pyplot) n'est pas thread-safe → on sérialise les rendus
+        # exécutés via asyncio.to_thread pour éviter toute corruption d'état.
+        self._render_lock=asyncio.Lock()
 
     # -------- Slash /profil ---------------------------------
     @app_commands.command(name="profil", description="Fiche LoL")
@@ -473,8 +481,10 @@ class ProfileCog(commands.Cog):
 
         ranked   = await fetch_ranked(puid)
         solo,flex= ranked.get("RANKED_SOLO_5x5"), ranked.get("RANKED_FLEX_SR")
-        mids     = RIOT.get_match_ids(REGION, puid, 20)
-        matches  = [await fetch_match(mid) for mid in mids]
+        mids     = await RIOT.get_match_ids(REGION, puid, 20)
+        # Fetch des 20 matchs en parallèle (au lieu de séquentiel) et on écarte
+        # les éventuels None (match introuvable / 404) pour ne pas crasher.
+        matches  = [m for m in await asyncio.gather(*(fetch_match(mid) for mid in mids)) if m]
 
         roles = Counter(); w=l=0
         vision_sum=wards_p=wards_k=0
@@ -490,11 +500,16 @@ class ProfileCog(commands.Cog):
         lp_hist  = await r_get(f"lp_hist:{puid}:420") or {}  # SoloQ uniquement
         mates    = self._mates(matches, puid)
 
-        embeds, page2file = self._embeds(
-            name, solo, flex, roles, w, l,
-            matches, mastery, lp_hist, mates,
-            vision_sum, wards_p, wards_k, puid
-        )
+        # _embeds est purement synchrone mais lourd (matplotlib + sprites via
+        # requests/PIL) → on l'exécute dans un thread pour ne pas freezer le bot.
+        # Le lock sérialise les rendus (pyplot n'est pas thread-safe).
+        async with self._render_lock:
+            embeds, page2file = await asyncio.to_thread(
+                self._embeds,
+                name, solo, flex, roles, w, l,
+                matches, mastery, lp_hist, mates,
+                vision_sum, wards_p, wards_k, puid
+            )
 
         view=Pager(embeds, page2file)
         msg=await inter.followup.send(
@@ -509,7 +524,10 @@ class ProfileCog(commands.Cog):
             except ValueError:
                 await inter.followup.send("Format : Pseudo#TAG", ephemeral=True)
                 return None,None
-            acc=RIOT.get_account_by_name_tag(REGION, ign, tag)
+            acc=await RIOT.get_account_by_name_tag(REGION, ign, tag)
+            if not acc:
+                await inter.followup.send("Joueur introuvable.", ephemeral=True)
+                return None,None
             return acc["puuid"], acc["gameName"]
         with SessionLocal() as sess:
             u=sess.get(User, str(inter.user.id))
