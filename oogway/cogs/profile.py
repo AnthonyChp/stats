@@ -498,6 +498,15 @@ class ProfileCog(commands.Cog):
 
         mastery  = await fetch_mastery(puid)
         lp_hist  = await r_get(f"lp_hist:{puid}:420") or {}  # SoloQ uniquement
+        # Garde anti-corruption : la valeur Redis peut être double-encodée (str au
+        # lieu de dict) → on re-décode, et on retombe sur {} si ce n'est pas un dict.
+        if isinstance(lp_hist, str):
+            try:
+                lp_hist = json.loads(lp_hist)
+            except (json.JSONDecodeError, ValueError):
+                lp_hist = {}
+        if not isinstance(lp_hist, dict):
+            lp_hist = {}
         mates    = self._mates(matches, puid)
 
         # _embeds est purement synchrone mais lourd (matplotlib + sprites via
