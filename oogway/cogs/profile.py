@@ -359,9 +359,9 @@ def create_performance_heatmap(matches: list, puuid: str) -> discord.File:
         
         # Score de performance simple
         kills = part.get('kills', 0)
-        deaths = part.get('deaths', 1)
+        deaths = part.get('deaths', 0)
         assists = part.get('assists', 0)
-        kda = (kills + assists) / deaths
+        kda = (kills + assists) / max(1, deaths)
         win_bonus = 2 if part.get('win') else 0
         score = min(10, kda + win_bonus)
         
