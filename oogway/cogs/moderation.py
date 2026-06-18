@@ -185,6 +185,16 @@ class ModerationCog(commands.Cog):
         roles_removed_names = [role.name for role in roles_to_remove]
         roles_removed_ids = [str(role.id) for role in roles_to_remove]
 
+        # Ajouter le rôle mute EN PREMIER : si ça échoue, on n'a encore rien retiré
+        # → le membre conserve tous ses rôles (plus de fenêtre "sans aucun rôle").
+        try:
+            await membre.add_roles(mute_role, reason=f"Mute par {interaction.user}: {raison}")
+        except discord.Forbidden:
+            return await interaction.followup.send(
+                "Erreur: Je n'ai pas la permission d'ajouter le rôle mute.",
+                ephemeral=True
+            )
+
         # Sauvegarder en base de données pour pouvoir restaurer plus tard
         with SessionLocal() as session:
             # Supprimer l'ancien enregistrement si existant
@@ -201,22 +211,13 @@ class ModerationCog(commands.Cog):
             session.add(muted_user)
             session.commit()
 
-        # Retirer tous les rôles
+        # Retirer les autres rôles (le membre garde au moins le rôle mute si ça échoue)
         try:
             if roles_to_remove:
                 await membre.remove_roles(*roles_to_remove, reason=f"Mute par {interaction.user}: {raison}")
         except discord.Forbidden:
             return await interaction.followup.send(
                 "Erreur: Je n'ai pas la permission de retirer les rôles de ce membre.",
-                ephemeral=True
-            )
-
-        # Ajouter le rôle mute
-        try:
-            await membre.add_roles(mute_role, reason=f"Mute par {interaction.user}: {raison}")
-        except discord.Forbidden:
-            return await interaction.followup.send(
-                "Erreur: Je n'ai pas la permission d'ajouter le rôle mute.",
                 ephemeral=True
             )
 
@@ -371,17 +372,15 @@ class ModerationCog(commands.Cog):
                     "muted_by": muted_user.muted_by,
                     "reason": muted_user.reason
                 }
-                role_ids = [int(rid) for rid in muted_user.role_ids.split(",") if rid]
+                role_ids = [int(rid) for rid in muted_user.role_ids.split(",") if rid.strip()]
                 for role_id in role_ids:
                     role = interaction.guild.get_role(role_id)
                     if role and role.is_assignable():
                         roles_to_restore.append(role)
+                # NB: on NE supprime PAS encore l'enregistrement — seulement une fois
+                # le mute réellement levé (sinon un échec ferait perdre les rôles à restaurer).
 
-                # Supprimer l'enregistrement
-                session.delete(muted_user)
-                session.commit()
-
-        # Retirer le rôle mute
+        # Retirer le rôle mute (si ça échoue, l'enregistrement reste → on peut réessayer)
         try:
             await membre.remove_roles(mute_role, reason=f"Unmute par {interaction.user}")
         except discord.Forbidden:
@@ -398,6 +397,13 @@ class ModerationCog(commands.Cog):
                 roles_restored_names = [role.name for role in roles_to_restore]
             except discord.Forbidden:
                 log.warning("Impossible de restaurer certains rôles pour %s", membre)
+
+        # Le mute est levé → on peut supprimer l'enregistrement
+        with SessionLocal() as session:
+            session.query(MutedUser).filter(
+                MutedUser.discord_id == str(membre.id)
+            ).delete()
+            session.commit()
 
         # Créer l'embed de unmute
         embed = discord.Embed(

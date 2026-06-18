@@ -1,9 +1,20 @@
 version: '3.8'
 services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - ./redis-data:/data
+    # Le bot a besoin de Redis. Pointez REDIS_URL=redis://redis:6379/0 dans .env
+    # pour utiliser ce service (sinon une instance Redis externe reste possible).
+
   bot:
     build: .
     env_file:
       - .env
+    depends_on:
+      - redis
+    restart: unless-stopped
     volumes:
       - ./oogway/data:/app/oogway/data
     command: ["python", "-m", "oogway.bot"]

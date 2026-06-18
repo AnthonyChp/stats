@@ -62,6 +62,9 @@ TIER_EMOJI = {
 # Medal emojis for top 3
 MEDALS = ["🥇", "🥈", "🥉"]
 
+# Nombre d'entrées par page (partagé entre build_embed et le calcul de pages)
+PER_PAGE = 10
+
 # Retry decorator
 def with_retry(max_attempts: int = 3, base_delay: float = 0.5):
     def decorator(func):
@@ -120,9 +123,10 @@ class LeaderboardView(discord.ui.View):
         async def callback(self, interaction: discord.Interaction):  # type: ignore
             await interaction.response.defer()
             view: LeaderboardView = self.view  # type: ignore
-            view.page = max(view.page - 1, 0)
-            embed = await view.cog.build_embed(view.queue_index, view.page, view.sort_by)
-            await interaction.edit_original_response(embed=embed, view=view)
+            async with view.cog._render_lock:
+                view.page = max(view.page - 1, 0)
+                embed = await view.cog.build_embed(view.queue_index, view.page, view.sort_by)
+                await interaction.edit_original_response(embed=embed, view=view)
 
     class NextButton(discord.ui.Button):
         def __init__(self):
@@ -130,9 +134,12 @@ class LeaderboardView(discord.ui.View):
         async def callback(self, interaction: discord.Interaction):  # type: ignore
             await interaction.response.defer()
             view: LeaderboardView = self.view  # type: ignore
-            view.page += 1
-            embed = await view.cog.build_embed(view.queue_index, view.page, view.sort_by)
-            await interaction.edit_original_response(embed=embed, view=view)
+            async with view.cog._render_lock:
+                # ✅ Clamp: ne pas dépasser la dernière page (sinon "◀" semble bloqué)
+                last_page = view.cog._page_count(view.queue_index) - 1
+                view.page = min(view.page + 1, last_page)
+                embed = await view.cog.build_embed(view.queue_index, view.page, view.sort_by)
+                await interaction.edit_original_response(embed=embed, view=view)
 
     class QueueToggleButton(discord.ui.Button):
         def __init__(self):
@@ -141,12 +148,13 @@ class LeaderboardView(discord.ui.View):
         async def callback(self, interaction: discord.Interaction):  # type: ignore
             await interaction.response.defer()
             view: LeaderboardView = self.view  # type: ignore
-            view.queue_index = (view.queue_index + 1) % len(QUEUE_ORDERS)
-            view.page = 0
-            next_idx = (view.queue_index + 1) % len(QUEUE_ORDERS)
-            self.label = QUEUE_NAMES[QUEUE_ORDERS[next_idx]]
-            embed = await view.cog.build_embed(view.queue_index, view.page, view.sort_by)
-            await interaction.edit_original_response(embed=embed, view=view)
+            async with view.cog._render_lock:
+                view.queue_index = (view.queue_index + 1) % len(QUEUE_ORDERS)
+                view.page = 0
+                next_idx = (view.queue_index + 1) % len(QUEUE_ORDERS)
+                self.label = QUEUE_NAMES[QUEUE_ORDERS[next_idx]]
+                embed = await view.cog.build_embed(view.queue_index, view.page, view.sort_by)
+                await interaction.edit_original_response(embed=embed, view=view)
 
 class LeaderboardCog(commands.Cog):
     """Interactive LP leaderboard with progression tracking, streaks, and server stats."""
@@ -169,6 +177,14 @@ class LeaderboardCog(commands.Cog):
         # ✅ Nouveau: Cache des Discord users
         self._user_cache: Dict[int, Tuple[float, str, str]] = {}
         self._user_cache_ttl = 3600  # 1 heure
+
+        # ✅ Concurrence: sérialise les rendus pour éviter que 2 clics simultanés
+        # ne se télescopent sur le message partagé (la page "saute" sinon).
+        self._render_lock = asyncio.Lock()
+        # ✅ Stale-while-revalidate: queues dont le refresh tourne en arrière-plan
+        self._refreshing: set[int] = set()
+        # Flag d'initialisation pour rendre on_ready idempotent (reconnexions)
+        self._initialized = False
 
     @staticmethod
     def get_wr_label(wr: int) -> str:
@@ -198,31 +214,45 @@ class LeaderboardCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
+        # ✅ Idempotent: on_ready se déclenche à CHAQUE (re)connexion Discord.
+        # Sans ce garde, on relançait .start() (RuntimeError) et on réinitialisait
+        # la page du message partagé à chaque coupure réseau.
+        if self._initialized:
+            log.debug("LeaderboardCog déjà initialisé, on ignore on_ready")
+            return
+        self._initialized = True
+
         log.info("LeaderboardCog ready, retrieving or sending message")
         channel = self.bot.get_channel(settings.LEADERBOARD_CHANNEL_ID) or await self.bot.fetch_channel(settings.LEADERBOARD_CHANNEL_ID)
         async for msg in channel.history(limit=50):
             if msg.author == self.bot.user and msg.embeds and "Leaderboard" in msg.embeds[0].title:
                 self.lb_message = msg
                 break
+        self.view = LeaderboardView(self)
         if not self.lb_message:
-            self.view = LeaderboardView(self)
             embed = await self.build_embed(0, 0, "LP")
             self.lb_message = await channel.send(embed=embed, view=self.view)
         else:
-            self.view = LeaderboardView(self)
             await self.lb_message.edit(view=self.view)
-        self.update_loop.start()
-        self.track_monthly_start.start()
+
+        if not self.update_loop.is_running():
+            self.update_loop.start()
+        if not self.track_monthly_start.is_running():
+            self.track_monthly_start.start()
 
     @tasks.loop(minutes=5)
     async def update_loop(self):
         """Auto-update du leaderboard toutes les 5 minutes."""
         if not self.lb_message:
             return
-        # Invalider le cache des entrées pour forcer un refresh
-        self._entries_cache = {420: None, 440: None}
-        embed = await self.build_embed(self.view.queue_index, self.view.page, self.view.sort_by)
+        # Rafraîchir proactivement la queue affichée pour garder le cache chaud
+        # (les clics utilisateurs tombent ainsi toujours sur des données prêtes).
         try:
+            await self._refresh_entries(QUEUE_ORDERS[self.view.queue_index])
+        except Exception as e:
+            log.error(f"Failed to refresh entries in loop: {e}")
+        try:
+            embed = await self.build_embed(self.view.queue_index, self.view.page, self.view.sort_by)
             await self.lb_message.edit(embed=embed)
             log.info("Leaderboard auto-updated")
         except Exception as e:
@@ -286,20 +316,77 @@ class LeaderboardCog(commands.Cog):
         
         await asyncio.gather(*(fetch_one(did) for did in discord_ids), return_exceptions=True)
 
+    def _empty_data(self) -> Dict:
+        """Structure de données vide réutilisable (aucun joueur classé)."""
+        return {
+            'entries': [],
+            'server_stats': {
+                "total_players": 0,
+                "avg_tier": "N/A",
+                "avg_wr": 0,
+                "best_streak_player": None,
+                "best_streak": 0,
+                "top_climber": None,
+                "top_climb": 0
+            },
+            'distribution': {},
+            'records': {
+                "highest_rank": None,
+                "best_wr": None,
+                "most_games": None
+            }
+        }
+
+    def _page_count(self, queue_index: int) -> int:
+        """Nombre de pages pour la queue donnée (d'après le cache courant)."""
+        queue_id = QUEUE_ORDERS[queue_index]
+        cached = self._entries_cache.get(queue_id)
+        if not cached:
+            return 1
+        n = len(cached[1]['entries'])
+        return max(math.ceil(n / PER_PAGE), 1)
+
+    def _schedule_refresh(self, queue_id: int) -> None:
+        """Lance un refresh en arrière-plan si aucun n'est déjà en cours."""
+        if queue_id in self._refreshing:
+            return
+        self._refreshing.add(queue_id)
+
+        async def _run():
+            try:
+                await self._refresh_entries(queue_id)
+            except Exception as e:
+                log.error(f"Background refresh failed for queue {queue_id}: {e}")
+            finally:
+                self._refreshing.discard(queue_id)
+
+        asyncio.create_task(_run())
+
     async def _get_entries(self, queue_id: int, force_refresh: bool = False) -> Dict:
         """
-        ✅ Cache global avec stats pré-calculées.
-        Retourne: Dict avec 'entries', 'server_stats', 'distribution', 'records'
+        ✅ Stale-while-revalidate: sert immédiatement le cache (même périmé) et
+        déclenche un refresh en arrière-plan. Un clic ne bloque donc JAMAIS sur
+        les appels Riot. Seul le tout premier chargement (cache vide) attend.
         """
         now = time.time()
-        
-        # Utiliser le cache si disponible et pas expiré
-        if not force_refresh and self._entries_cache[queue_id] is not None:
-            cache_ts, cached_data = self._entries_cache[queue_id]
-            if now - cache_ts < self._entries_cache_ttl:
+        cached = self._entries_cache.get(queue_id)
+
+        if cached is not None and not force_refresh:
+            cache_ts, cached_data = cached
+            if now - cache_ts >= self._entries_cache_ttl:
+                # Données périmées → on les sert quand même et on rafraîchit en fond
+                log.debug(f"Serving stale data for queue {queue_id}, refreshing in background")
+                self._schedule_refresh(queue_id)
+            else:
                 log.debug(f"Using cached data for queue {queue_id}")
-                return cached_data
-        
+            return cached_data
+
+        # Pas de cache du tout (premier chargement) → refresh bloquant inévitable
+        return await self._refresh_entries(queue_id)
+
+    async def _refresh_entries(self, queue_id: int) -> Dict:
+        """Recharge réellement les données depuis Riot et met à jour le cache."""
+        now = time.time()
         log.info(f"♻️ Refreshing leaderboard cache for queue {queue_id}")
 
         users = get_all_accounts(self.db)  # comptes principaux + smurfs
@@ -321,24 +408,7 @@ class LeaderboardCog(commands.Cog):
         
         if not entries:
             # Retourner des données vides si aucun joueur
-            cached_data = {
-                'entries': [],
-                'server_stats': {
-                    "total_players": 0,
-                    "avg_tier": "N/A",
-                    "avg_wr": 0,
-                    "best_streak_player": None,
-                    "best_streak": 0,
-                    "top_climber": None,
-                    "top_climb": 0
-                },
-                'distribution': {},
-                'records': {
-                    "highest_rank": None,
-                    "best_wr": None,
-                    "most_games": None
-                }
-            }
+            cached_data = self._empty_data()
             self._entries_cache[queue_id] = (now, cached_data)
             return cached_data
         
@@ -455,7 +525,7 @@ class LeaderboardCog(commands.Cog):
             )
             return embed
 
-        per_page = 10
+        per_page = PER_PAGE
         total_pages = max(math.ceil(len(entries) / per_page), 1)
         page = max(0, min(page, total_pages - 1))
         slice_ = entries[page * per_page:(page + 1) * per_page]
@@ -700,8 +770,9 @@ class LeaderboardCog(commands.Cog):
             if now - ts < self.CACHE_TTL:
                 return data
 
-        # Fully async
-        summ = await self.riot.get_summoner_by_puuid(user.region, user.puuid)
+        # Fully async — un seul appel suffit (les entrées de ligue contiennent
+        # tier/div/lp/wins/losses). L'ancien get_summoner_by_puuid était inutilisé
+        # et doublait la charge sur le rate-limit Riot → refresh 2× plus lent.
         entries = await self.riot.get_league_entries_by_puuid(user.region, user.puuid)
 
         entry = next((e for e in entries if e["queueType"] == QUEUE_TYPE[queue_id]), None)
