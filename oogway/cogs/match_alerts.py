@@ -652,6 +652,21 @@ def lp_delta_between(prev: Tuple[str, str, int], cur: Tuple[str, str, int]) -> i
         return -(prev_lp + (100 - cur_lp))
 
 
+def rank_to_absolute(tier: str, div: str, lp: int) -> int:
+    """LP cumulé continu (tier + division + LP) pour la courbe de progression.
+
+    Chaque division vaut un palier de 100 LP, donc un rank-up FAIT MONTER la
+    valeur au lieu de retomber (ex: Gold IV 90 LP -> Gold III 10 LP passe de
+    1290 à 1310). Master+ : ladder LP unique au-dessus de Diamant."""
+    if not tier or tier == "Unranked":
+        return int(lp)
+    tier_idx = TIER_INDEX.get(tier, 0)
+    if tier_idx >= TIER_INDEX["Master"]:
+        return TIER_INDEX["Master"] * 400 + int(lp)
+    div_band = 4 - DIV_NUM.get(div, 4)   # IV->0, III->1, II->2, I->3
+    return tier_idx * 400 + div_band * 100 + int(lp)
+
+
 def detect_rank_change(prev: Tuple[str, str, int], cur: Tuple[str, str, int]) -> Optional[str]:
     prev_t, prev_d, _ = prev
     cur_t, cur_d, _   = cur
@@ -969,13 +984,16 @@ class MatchAlertsCog(commands.Cog):
         rank_change = detect_rank_change(prev_state, cur_state)
 
         now      = int(time.time())
-        hist_key = f"lp_hist:{user.puuid}:{queue_id}"
+        # v2 : on stocke une valeur LP CUMULÉE (tier+division+LP) au lieu du LP brut,
+        # pour que les rank-ups montent sur la courbe. Nouvelle clé → l'ancien
+        # historique brut expire tout seul (pas de mélange des deux échelles).
+        hist_key = f"lp_hist_v2:{user.puuid}:{queue_id}"
         raw      = await safe_r_get(hist_key)
         try:
             hist = {int(k): int(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
         except (ValueError, TypeError):
             hist = {}
-        hist[now] = int(lp_now)
+        hist[now] = rank_to_absolute(tier, div, lp_now)
         thirty_days = 30 * 24 * 3600
         hist = {t: v for t, v in hist.items() if (now - t) <= thirty_days}
         await safe_r_set(hist_key, {str(t): v for t, v in hist.items()}, ttl=thirty_days)
