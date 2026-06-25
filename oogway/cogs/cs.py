@@ -382,7 +382,7 @@ def build_match_embed(
     embed = discord.Embed(
         title=f"{result}  ·  {map_name}  ·  {score_str}",
         colour=color,
-        url=f"https://leetify.com/app/match-details/{match_id}" if match_id else discord.Embed.Empty,
+        url=f"https://leetify.com/app/match-details/{match_id}" if match_id else None,
     )
     embed.set_author(
         name=player_name,
@@ -628,7 +628,7 @@ class CS2TrackerCog(commands.Cog):
         premier     = ranks.get("premier")
         faceit      = ranks.get("faceit")
         wingman_r   = _i(ranks.get("wingman"))
-        leetify_r   = _f(ranks.get("leetify"))
+        leetify_r   = _f(ranks.get("leetify")) * 100
 
         aim         = _f(rating.get("aim"))
         positioning = _f(rating.get("positioning"))
@@ -639,6 +639,8 @@ class CS2TrackerCog(commands.Cog):
         total_matches = _i(profile.get("total_matches"))
         winrate       = _f(profile.get("winrate")) * 100
         hs_pct        = _f(stats_prof.get("accuracy_head"))
+        if hs_pct <= 1.0:
+            hs_pct *= 100
         reaction      = _f(stats_prof.get("reaction_time_ms"))
         preaim        = _f(stats_prof.get("preaim"))
 
