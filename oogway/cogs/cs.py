@@ -360,17 +360,17 @@ def build_match_embed(
     kd         = _f(stats.get("kd_ratio"))
     hs_pct     = _pct(stats.get("accuracy_head"))
     adr        = _f(stats.get("dpr"))          # dpr = damage per round
-    rating     = _f(stats.get("leetify_rating"))
-    ct_rating  = _f(stats.get("ct_leetify_rating"))
-    t_rating   = _f(stats.get("t_leetify_rating"))
+    rating     = _f(stats.get("leetify_rating")) * 100
+    ct_rating  = _f(stats.get("ct_leetify_rating")) * 100
+    t_rating   = _f(stats.get("t_leetify_rating")) * 100
     mvps       = _i(stats.get("mvps"))
 
     # ── Scores Leetify (depuis profile.rating ou stats du match) ──
     # Dans /v3/profile/matches les scores Leetify par match ne sont pas présents
     # On affiche le rating du match (leetify_rating, ct, t)
-    rating_display = f"{rating:+.4f}"
-    ct_display     = f"{ct_rating:+.4f}"
-    t_display      = f"{t_rating:+.4f}"
+    rating_display = f"{rating:+.2f}"
+    ct_display     = f"{ct_rating:+.2f}"
+    t_display      = f"{t_rating:+.2f}"
 
     # ── Précision ─────────────────────────────────────────────────
     accuracy   = _pct(stats.get("accuracy_enemy_spotted"))
