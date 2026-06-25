@@ -856,6 +856,12 @@ class SetupView(discord.ui.View):
         self.captain_pick: bool = False
         self.done = asyncio.Event()
 
+    async def on_timeout(self):
+        # ✅ Sans ça, un setup abandonné laisse five_v_five bloqué sur
+        # `await setup.done.wait()` en tenant `_match_lock` → /5v5 HS jusqu'au restart.
+        self.canceled = True
+        self.done.set()
+
     @discord.ui.select(
         placeholder="Bo1",
         options=[discord.SelectOption(label=f"Bo{i}", value=str(i)) for i in (1, 3, 5)],

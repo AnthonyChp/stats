@@ -23,6 +23,7 @@ import discord
 from discord import Interaction, app_commands
 from discord.ext import commands
 
+from oogway.config import settings
 from oogway.models.series_state import SeriesState
 from oogway.services.chi import predict as chi_predict, bar as chi_bar
 from oogway.cogs.profile import r_get, r_set
